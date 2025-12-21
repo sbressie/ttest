@@ -67,7 +67,7 @@ aoi_input = st.text_input("Coordinates (MinLon, MinLat, MaxLon, MaxLat)", "37.45
 if st.button("Generate Damage Map"):
     coords = [float(x.strip()) for x in aoi_input.split(',')]
     roi = ee.Geometry.Rectangle(coords)
-    ef calculate_population_impact(damage_layer, aoi):
+    def calculate_population_impact(damage_layer, aoi):
     """Calculates the estimated population within damaged pixels"""
 
     # 1. Load WorldPop Global Project Population (100m resolution)
