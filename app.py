@@ -95,18 +95,48 @@ aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05,
 
 if st.button("🚀 Run Analysis"):
     try:
+        # Parse coordinates
         coords = [float(x.strip()) for x in aoi_input.split(',')]
         roi = ee.Geometry.Rectangle(coords)
 
-        buildings = get_building_fc(roi, footprint_source)
-        count = buildings.size().getInfo()
+        # Create a status container
+        with st.status("Analyzing Satellite Data...", expanded=True) as status:
+            
+            st.write("🔍 Searching for building footprints...")
+            buildings = get_building_fc(roi, footprint_source)
+            # This is the first GEE network call
+            count = buildings.size().getInfo()
 
-        if count == 0:
-            st.warning(f"No footprints found using {footprint_source}. Try OSM.")
-        else:
-            with st.spinner(f"Processing {count} buildings..."):
+            if count == 0:
+                st.warning(f"No footprints found using {footprint_source}.")
+                status.update(label="Analysis Failed", state="error")
+            else:
+                st.write(f"🛰️ Fetching Sentinel-1 SAR stacks for {count} buildings...")
                 b_mask = ee.Image.constant(0).paint(buildings, 1)
+                
+                st.write("📉 Performing Welch's T-Test (Change Detection)...")
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                
+                st.write("👥 Estimating population impact via WorldPop...")
+                # Second GEE network call
+                pop_val = calculate_population_impact(damage, roi).getInfo()
+                
+                if pop_val is not None:
+                    st.metric("Estimated People Affected", f"{int(pop_val):,}")
+
+                st.write("🗺️ Rendering final map layers...")
+                m.add_legend(title="Damage Confidence", legend_dict={
+                    'Likely Damage': '#ffffb2', 'Significant': '#fd8d3c', 'Severe': '#e31a1c'
+                })
+                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'gray'}, 'Buildings')
+                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
+                m.centerObject(roi, 14)
+                
+                status.update(label="Analysis Complete!", state="complete", expanded=False)
+                st.success(f"Successfully analyzed {count} structures.")
+
+    except Exception as e:
+        st.error(f"Analysis Error: {e}")
                 
                 # Population calc
                 pop_val = calculate_population_impact(damage, roi).getInfo()
