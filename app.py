@@ -8,14 +8,20 @@ from google.oauth2 import service_account
 # --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
     try:
+        # Pull from Streamlit Secrets
         if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
             st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found in Streamlit settings.")
             st.stop()
-
+            
         cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
+        
+        # Use google-auth to create credentials object
+        # This bypasses the 'Enter verification code' prompt entirely
         credentials = service_account.Credentials.from_service_account_info(cred_info)
-        ee.Initialize(credentials, project=cred_info.get('sarttest'))
-
+        
+        # Initialize with the project ID from your secrets
+        ee.Initialize(credentials, project=cred_info.get('project_id'))
+        
     except Exception as e:
         st.error(f"🛰️ GEE Auth Failed: {e}")
         st.info("Ensure your Secrets are in TOML format and the Private Key uses triple quotes.")
@@ -39,9 +45,9 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
 
-    def stats(col):
+    def stats(col): 
         return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
-
+    
     s_pre, s_post = stats(pre), stats(post)
 
     # Welch's T-Test Calculation
@@ -54,12 +60,12 @@ def calculate_population_impact(damage_layer, aoi):
     worldpop = ee.ImageCollection("WorldPop/GP/100m/pop") \
         .filterBounds(aoi) \
         .filter(ee.Filter.date('2020-01-01', '2020-12-31')) \
-        .first()
+        .first() 
     impacted_pop_image = worldpop.updateMask(damage_layer.gt(0))
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=100,
+        scale=100, 
         maxPixels=1e9
     )
     return stats.get('population')
@@ -100,7 +106,7 @@ if st.button("🚀 Run Analysis"):
             with st.spinner(f"Processing {count} buildings..."):
                 b_mask = ee.Image.constant(0).paint(buildings, 1)
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
-
+                
                 # Population calc
                 pop_val = calculate_population_impact(damage, roi).getInfo()
                 if pop_val:
