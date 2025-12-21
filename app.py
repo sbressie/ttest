@@ -7,18 +7,17 @@ import datetime
 # --- 1. AUTHENTICATION ---
 def authenticate_gee():
     try:
-        # Pulling from Streamlit Cloud Secrets
         ee_creds = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
+        cred_dict = ee_creds.to_dict()
+        
+        # Initialize credentials
         credentials = ee.ServiceAccountCredentials(
-            ee_creds['client_email'],
-            key_data=json.dumps(ee_creds)
+            cred_dict['client_email'],
+            key_data=json.dumps(cred_dict)
         )
         ee.Initialize(credentials)
     except Exception as e:
         st.error(f"GEE Auth Failed: {e}")
-
-authenticate_gee()
-
 # --- 2. LOGIC & HELPER FUNCTIONS ---
 
 def get_building_fc(aoi, source):
