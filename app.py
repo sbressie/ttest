@@ -36,7 +36,7 @@ def authenticate_gee():
 authenticate_gee()
 # --- 2. HELPER FUNCTIONS ---
 
-ddef get_building_fc(aoi, source):
+def get_building_fc(aoi, source):
     """Fetches building footprints using reliable public GEE assets"""
     if source == "Google Open Buildings (V3)":
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
