@@ -36,13 +36,15 @@ def authenticate_gee():
 authenticate_gee()
 # --- 2. HELPER FUNCTIONS ---
 
-def get_building_fc(aoi, source):
+ddef get_building_fc(aoi, source):
+    """Fetches building footprints using reliable public GEE assets"""
     if source == "Google Open Buildings (V3)":
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
     elif source == "OpenStreetMap (OSM)":
-        return ee.FeatureCollection("projects/sat-io/open-datasets/OSM/buildings").filterBounds(aoi)
+        return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
+    
     else:
-        return ee.FeatureCollection("projects/sat-io/open-datasets/GBA/polygons").filterBounds(aoi)
+        return ee.FeatureCollection("projects/sat-io/open-datasets/MSFP/buildings").filterBounds(aoi)
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
