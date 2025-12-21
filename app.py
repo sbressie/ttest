@@ -33,12 +33,12 @@ authenticate_gee()
 
 # --- 2. HELPER FUNCTIONS ---
 def get_building_fc(aoi, source):
-    """Uses only public, high-reliability assets"""
     if source == "Google Open Buildings (V3)":
-        # Official Google asset covering Africa, Latin America, Caribbean, South Asia, Southeast Asia
+        # This is the official Google Asset ID
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
+    
     elif source == "MS Global Buildings":
-        # Official Community Catalog ID for Microsoft Global Buildings
+        # This is the verified Microsoft Asset ID in the Community Catalog
         return ee.FeatureCollection("projects/sat-io/open-datasets/ms-global-ml-buildings").filterBounds(aoi)
     else:
         # Fallback to MSFP if selection varies
