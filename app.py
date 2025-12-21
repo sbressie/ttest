@@ -7,30 +7,33 @@ from google.oauth2 import service_account
 
 # --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
-    try:
-        if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
-            st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
-            st.stop()
+    # Use st.cache_resource so this only runs once and stays active
+    if 'ee_initialized' not in st.session_state:
+        try:
+            if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
+                st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
+                st.stop()
+                
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
+            scopes = [
+                'https://www.googleapis.com/auth/earthengine',
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
             
-        cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
-        
-        # Define the specific scopes required for GEE
-        scopes = [
-            'https://www.googleapis.com/auth/earthengine',
-            'https://www.googleapis.com/auth/cloud-platform'
-        ]
-        
-        # Pass the scopes here
-        credentials = service_account.Credentials.from_service_account_info(
-            cred_info, 
-            scopes=scopes
-        )
-        
-        ee.Initialize(credentials, project=cred_info.get('sarttest'))
-        
-    except Exception as e:
-        st.error(f"🛰️ GEE Auth Failed: {e}")
-        st.stop()
+            credentials = service_account.Credentials.from_service_account_info(
+                cred_info, scopes=scopes
+            )
+            
+            # Explicitly initialize
+            ee.Initialize(credentials, project=cred_info.get('project_id'))
+            st.session_state['ee_initialized'] = True
+            
+        except Exception as e:
+            st.error(f"🛰️ GEE Auth Failed: {e}")
+            st.stop()
+
+# Run the auth function
+authenticate_gee()
 # --- 2. HELPER FUNCTIONS ---
 
 def get_building_fc(aoi, source):
