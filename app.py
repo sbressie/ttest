@@ -3,21 +3,19 @@ import ee
 import geemap.foliumap as geemap
 import json
 import datetime
+from google.oauth2 import service_account
 
 # --- 1. AUTHENTICATION ---
 def authenticate_gee():
     try:
         ee_creds = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
         cred_dict = ee_creds.to_dict()
-        
-        # Initialize credentials
-        credentials = ee.ServiceAccountCredentials(
-            cred_dict['client_email'],
-            key_data=json.dumps(cred_dict)
-        )
-        ee.Initialize(credentials)
+        credentials = service_account.Credentials.from_service_account_info(cred_dict)
+        ee.Initialize(credentials, project=cred_dict['sarttest'])
+
     except Exception as e:
         st.error(f"GEE Auth Failed: {e}")
+        st.stop() # Prevents the rest of the app from running without auth
 # --- 2. LOGIC & HELPER FUNCTIONS ---
 
 def get_building_fc(aoi, source):
