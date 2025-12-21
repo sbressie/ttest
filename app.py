@@ -20,7 +20,7 @@ def authenticate_gee():
         credentials = service_account.Credentials.from_service_account_info(cred_info)
         
         # Initialize with the project ID from your secrets
-        ee.Initialize(credentials, project=cred_info.get('project_id'))
+        ee.Initialize(credentials, project=cred_info.get('sarttest'))
         
     except Exception as e:
         st.error(f"🛰️ GEE Auth Failed: {e}")
