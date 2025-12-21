@@ -8,28 +8,29 @@ from google.oauth2 import service_account
 # --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
     try:
-        # Pull from Streamlit Secrets
         if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
-            st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found in Streamlit settings.")
+            st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
             st.stop()
             
         cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
         
-        # Use google-auth to create credentials object
-        # This bypasses the 'Enter verification code' prompt entirely
-        credentials = service_account.Credentials.from_service_account_info(cred_info)
+        # Define the specific scopes required for GEE
+        scopes = [
+            'https://www.googleapis.com/auth/earthengine',
+            'https://www.googleapis.com/auth/cloud-platform'
+        ]
         
-        # Initialize with the project ID from your secrets
+        # Pass the scopes here
+        credentials = service_account.Credentials.from_service_account_info(
+            cred_info, 
+            scopes=scopes
+        )
+        
         ee.Initialize(credentials, project=cred_info.get('sarttest'))
         
     except Exception as e:
         st.error(f"🛰️ GEE Auth Failed: {e}")
-        st.info("Ensure your Secrets are in TOML format and the Private Key uses triple quotes.")
         st.stop()
-
-# Run auth immediately
-authenticate_gee()
-
 # --- 2. HELPER FUNCTIONS ---
 
 def get_building_fc(aoi, source):
