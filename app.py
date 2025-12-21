@@ -74,7 +74,7 @@ def calculate_population_impact(damage_layer, aoi):
     return stats.get('population')
 
 # --- 3. UI LAYOUT ---
-st.title("🛰️ SAR Conflict Damage Detector")
+st.title("🛰️ SAR Conflict T-Test")
 
 # Connection Indicator
 if st.session_state.get('ee_initialized'):
