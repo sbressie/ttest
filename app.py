@@ -7,7 +7,6 @@ from google.oauth2 import service_account
 
 # --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
-    # Use st.cache_resource so this only runs once and stays active
     if 'ee_initialized' not in st.session_state:
         try:
             if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
@@ -24,27 +23,25 @@ def authenticate_gee():
                 cred_info, scopes=scopes
             )
             
-            # Explicitly initialize
             ee.Initialize(credentials, project=cred_info.get('project_id'))
             st.session_state['ee_initialized'] = True
-            
         except Exception as e:
+            st.session_state['ee_initialized'] = False
             st.error(f"🛰️ GEE Auth Failed: {e}")
-            st.stop()
 
-# Run the auth function
 authenticate_gee()
-# --- 2. HELPER FUNCTIONS ---
 
+# --- 2. HELPER FUNCTIONS ---
 def get_building_fc(aoi, source):
-    """Fetches building footprints using reliable public GEE assets"""
+    """Uses only public, high-reliability assets"""
     if source == "Google Open Buildings (V3)":
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
-    elif source == "OpenStreetMap (OSM)":
+    elif source == "MS Global Buildings":
+        # Publicly available Microsoft footprints
         return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
-    
     else:
-        return ee.FeatureCollection("projects/sat-io/open-datasets/MSFP/buildings").filterBounds(aoi)
+        # Fallback to MSFP if selection varies
+        return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
@@ -56,13 +53,13 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     
     s_pre, s_post = stats(pre), stats(post)
 
-    # Welch's T-Test Calculation
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
 def calculate_population_impact(damage_layer, aoi):
+    # WorldPop Global 100m
     worldpop = ee.ImageCollection("WorldPop/GP/100m/pop") \
         .filterBounds(aoi) \
         .filter(ee.Filter.date('2020-01-01', '2020-12-31')) \
@@ -79,10 +76,17 @@ def calculate_population_impact(damage_layer, aoi):
 # --- 3. UI LAYOUT ---
 st.title("🛰️ SAR Conflict Damage Detector")
 
+# Connection Indicator
+if st.session_state.get('ee_initialized'):
+    st.sidebar.success("✅ GEE Connected")
+else:
+    st.sidebar.error("❌ GEE Disconnected")
+
 st.sidebar.header("1. Data Sources")
 footprint_source = st.sidebar.selectbox(
     "Building Footprint Set",
-    ["Google Open Buildings (V3)", "OpenStreetMap (OSM)", "Global Building Atlas (GBA)"]
+    ["Google Open Buildings (V3)", "MS Global Buildings"],
+    index=0 # Defaults to Google V3
 )
 
 st.sidebar.header("2. Analysis Dates")
@@ -100,46 +104,35 @@ aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05,
 
 if st.button("🚀 Run Analysis"):
     try:
-        # Parse coordinates
         coords = [float(x.strip()) for x in aoi_input.split(',')]
         roi = ee.Geometry.Rectangle(coords)
 
-        # Create a status container
         with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            
-            st.write("🔍 Searching for building footprints...")
+            st.write("🔍 Loading building footprints...")
             buildings = get_building_fc(roi, footprint_source)
-            # This is the first GEE network call
             count = buildings.size().getInfo()
 
             if count == 0:
-                st.warning(f"No footprints found using {footprint_source}.")
-                status.update(label="Analysis Failed", state="error")
+                st.warning("No structures found in this area.")
+                status.update(label="No Data Found", state="error")
             else:
-                st.write(f"🛰️ Fetching Sentinel-1 SAR stacks for {count} buildings...")
+                st.write(f"🛰️ Processing SAR change detection for {count} structures...")
                 b_mask = ee.Image.constant(0).paint(buildings, 1)
-                
-                st.write("📉 Performing Welch's T-Test (Change Detection)...")
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
                 
-                st.write("👥 Estimating population impact via WorldPop...")
-                # Second GEE network call
+                st.write("👥 Calculating population impact...")
                 pop_val = calculate_population_impact(damage, roi).getInfo()
                 
                 if pop_val is not None:
                     st.metric("Estimated People Affected", f"{int(pop_val):,}")
 
-                st.write("🗺️ Rendering final map layers...")
-                m.add_legend(title="Damage Confidence", legend_dict={
-                    'Likely Damage': '#ffffb2', 'Significant': '#fd8d3c', 'Severe': '#e31a1c'
-                })
+                st.write("🗺️ Finalizing Map...")
                 m.addLayer(b_mask.updateMask(b_mask), {'palette': 'gray'}, 'Buildings')
                 m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
                 m.centerObject(roi, 14)
                 
                 status.update(label="Analysis Complete!", state="complete", expanded=False)
-                st.success(f"Successfully analyzed {count} structures.")
-
+                st.success("Results ready below.")
     except Exception as e:
         st.error(f"Analysis Error: {e}")
 
