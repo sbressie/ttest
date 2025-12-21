@@ -89,7 +89,7 @@ if st.button("Generate Damage Map"):
         maxPixels=1e9
     )
 
-        return stats.get('population')
+    return stats.get('population')
 
 # Integration into your existing Streamlit 'Run' button:
 # if st.button("Generate Damage Map"):
