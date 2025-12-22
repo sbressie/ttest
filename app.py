@@ -62,26 +62,39 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
 
 def calculate_population_impact(damage_layer, aoi):
     """
-    Calculates population within damaged areas using LandScan HD Ukraine 2022.
-    Band 'population' represents people per pixel (~100m resolution).
+    Selects LandScan HD for Ukraine or Global LandScan for other regions.
     """
-    # Load the specific LandScan HD Ukraine 2022 image
-    landscan = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
+    # 1. Define Ukraine's rough geographic bounds to toggle datasets
+    # [minLon, minLat, maxLon, maxLat]
+    ukraine_bounds = ee.Geometry.Rectangle([22.1, 44.4, 40.2, 52.4])
     
-    # Mask the population data by the damage detection results
-    # Only counts people in pixels where damage was detected (damage_layer > 0)
-    impacted_pop_image = landscan.updateMask(damage_layer.gt(0))
+    # 2. Determine which asset to use based on intersection with Ukraine
+    is_ukraine = ukraine_bounds.intersects(aoi).getInfo()
     
-    # Reduce the region to sum up the population count
+    if is_ukraine:
+        # High-definition LandScan for Ukraine (approx. 100m)
+        pop_image = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
+        scale_val = 100
+    else:
+        # Global LandScan (approx. 1km resolution)
+        # We take the most recent year (2022) from the collection
+        pop_image = ee.ImageCollection("projects/sat-io/open-datasets/landscan-global") \
+                      .filterDate('2022-01-01', '2022-12-31') \
+                      .first() \
+                      .select('b1') # Global LandScan typically uses 'b1' for population count
+        scale_val = 1000
+
+    # 3. Mask population by damage and reduce
+    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
+    
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=100,      # LandScan HD is approx 100m resolution
+        scale=scale_val,
         maxPixels=1e9
     )
     
-    # Return the sum from the 'population' band
-    return stats.get('population')
+    return stats.get(pop_image.bandNames().get(0))
 
 # --- 3. UI LAYOUT ---
 st.title("🛰️ SAR Conflict T-Test")
