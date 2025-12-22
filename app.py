@@ -36,11 +36,9 @@ def get_building_fc(aoi, source):
     """Uses only public, high-reliability assets"""
     if source == "Google Open Buildings (V3)":
         # Note: Google Open Buildings currently covers Africa, Latin America,
-        # Caribbean, South Asia, and Southeast Asia (does not cover Ukraine).
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
     elif source == "MS Global Buildings":
 
-        # Correct path for Ukraine in the community catalog:
         return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
     else:
         # Fallback to MSFP if selection varies
