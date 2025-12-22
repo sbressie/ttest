@@ -33,14 +33,29 @@ authenticate_gee()
 
 # --- 2. HELPER FUNCTIONS ---
 def get_building_fc(aoi, source):
-    """Uses only public, high-reliability assets"""
+    """Dynamically fetches building footprints based on AOI location"""
     if source == "Google Open Buildings (V3)":
-        # Note: Google Open Buildings currently covers Africa, Latin America, 
-        # Caribbean, South Asia, and Southeast Asia (does not cover Ukraine).
+        # Google V3 is one global collection (filtered by AOI)
         return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
+    
     elif source == "MS Global Buildings":
-        # Correct path for Ukraine in the community catalog:
-        return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
+        try:
+            # 1. Load a dataset of world boundaries to find the ISO code
+            countries = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+            
+            # 2. Find which country contains the center of the user's AOI
+            target_country = countries.filterBounds(aoi.centroid()).first()
+            iso_code = target_country.get('country_na').getInfo() # e.g., 'Ukraine' or 'United States'
+            
+            # 3. Construct the path dynamically. Note: MS Assets in GEE 
+            # are often named by the country name in the community catalog.
+            # We capitalize to match catalog naming conventions.
+            asset_path = f"projects/sat-io/open-datasets/MSBuildings/{iso_code}"
+            
+            return ee.FeatureCollection(asset_path).filterBounds(aoi)
+        except Exception:
+            # Fallback if the dynamic path fails (e.g., country name mismatch)
+            return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
     else:
         # Fallback to MSFP if selection varies
         return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
@@ -129,11 +144,15 @@ if st.button("🚀 Run Analysis"):
     try:
         coords = [float(x.strip()) for x in aoi_input.split(',')]
         roi = ee.Geometry.Rectangle(coords)
+        
 
         with st.status("Analyzing Satellite Data...", expanded=True) as status:
             st.write("🔍 Loading building footprints...")
+            # Inside the "Run Analysis" button block
             buildings = get_building_fc(roi, footprint_source)
-            count = buildings.size().getInfo()
+            m.centerObject(roi, 14) # Automatically zooms to the new area
+            m.addLayer(buildings, {'color': 'red'}, 'Dynamic Buildings')
+            
 
             if count == 0:
                 st.warning("No structures found in this area.")
