@@ -136,8 +136,8 @@ with col1:
     pre_s = st.sidebar.date_input("Pre-Event Start", datetime.date(2021, 12, 1)).strftime('%Y-%m-%d')
     pre_e = st.sidebar.date_input("Pre-Event End", datetime.date(2021, 12, 31)).strftime('%Y-%m-%d')
 with col2:
-    post_s = st.sidebar.date_input("Post-Event Start", datetime.date(2022, 3, 1)).strftime('%Y-%m-%d')
-    post_e = st.sidebar.date_input("Post-Event End", datetime.date(2022, 3, 31)).strftime('%Y-%m-%d')
+    post_s = st.sidebar.date_input("Post-Event Start", datetime.date(2024, 6, 1)).strftime('%Y-%m-%d')
+    post_e = st.sidebar.date_input("Post-Event End", datetime.date(2025, 12, 22)).strftime('%Y-%m-%d')
 
 # --- 4. EXECUTION ---
 m = geemap.Map(center=[48.379, 38.016], zoom=12)
