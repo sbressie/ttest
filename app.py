@@ -151,7 +151,7 @@ if st.button("🚀 Run Analysis"):
                     st.metric("Estimated People Affected", f"{int(pop_val):,}")
 
                 st.write("🗺️ Finalizing Map...")
-                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'cyan'}, 'Buildings')
+                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'gray'}, 'Buildings')
                 m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
                 m.centerObject(roi, 14)
                 
