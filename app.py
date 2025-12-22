@@ -61,18 +61,26 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
 def calculate_population_impact(damage_layer, aoi):
-    # WorldPop Global 100m
-    worldpop = ee.ImageCollection("WorldPop/GP/100m/pop") \
-        .filterBounds(aoi) \
-        .filter(ee.Filter.date('2020-01-01', '2020-12-31')) \
-        .first() 
-    impacted_pop_image = worldpop.updateMask(damage_layer.gt(0))
+    """
+    Calculates population within damaged areas using LandScan HD Ukraine 2022.
+    Band 'population' represents people per pixel (~100m resolution).
+    """
+    # Load the specific LandScan HD Ukraine 2022 image
+    landscan = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
+    
+    # Mask the population data by the damage detection results
+    # Only counts people in pixels where damage was detected (damage_layer > 0)
+    impacted_pop_image = landscan.updateMask(damage_layer.gt(0))
+    
+    # Reduce the region to sum up the population count
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=100, 
+        scale=100,      # LandScan HD is approx 100m resolution
         maxPixels=1e9
     )
+    
+    # Return the sum from the 'population' band
     return stats.get('population')
 
 # --- 3. UI LAYOUT ---
