@@ -108,6 +108,7 @@ def calculate_population_impact(damage_layer, aoi):
     # Inside calculate_population_impact function
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
+        bestEffort=True,
         geometry=aoi,
         scale=100,
         maxPixels=1e9  # Increased from default to 1 billion
