@@ -58,7 +58,26 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
+def summarize_sar_change(roi, b_mask, pre_s, pre_e, post_s, post_e):
+    """Calculates quantitative change in SAR backscatter (VV band)"""
+    
+    def get_collection_mean(start, end):
+        return ee.ImageCollection('COPERNICUS/S1_GRD') \
+            .filterBounds(roi) \
+            .filterDate(start, end) \
+            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
+            .select('VV') \
+            .mean() \
+            .updateMask(b_mask)
 
+    pre_mean = get_collection_mean(pre_s, pre_e)
+    post_mean = get_collection_mean(post_s, post_e)
+
+    # Calculate mean values over the ROI
+    stats_pre = pre_mean.reduceRegion(reducer=ee.Reducer.mean(), geometry=roi, scale=10).get('VV')
+    stats_post = post_mean.reduceRegion(reducer=ee.Reducer.mean(), geometry=roi, scale=10).get('VV')
+    
+    return stats_pre, stats_post
 def calculate_population_impact(damage_layer, aoi):
     """
     Selects LandScan HD for Ukraine or Global LandScan for other regions.
@@ -141,6 +160,23 @@ if st.button("🚀 Run Analysis"):
                 st.write(f"🛰️ Processing SAR change detection for {count} structures...")
                 b_mask = ee.Image.constant(0).paint(buildings, 1)
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+             
+                st.write("📊 Summarizing SAR intensity changes...")
+                pre_val, post_val = summarize_sar_change(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                
+                # Convert from Earth Engine objects to Python floats
+                pre_db = pre_val.getInfo() if pre_val else 0
+                post_db = post_val.getInfo() if post_val else 0
+                diff = post_db - pre_db
+                
+                # Display as Streamlit Columns
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Pre-Event VV (dB)", f"{pre_db:.2f}")
+                col2.metric("Post-Event VV (dB)", f"{post_db:.2f}")
+                col3.metric("Net Change", f"{diff:.2f} dB", delta=diff, delta_color="inverse")
+                
+                if diff < -1.5:
+                    st.info("💡 Large negative change detected: Typical of structural collapse or flooding.")
 
                 st.write("👥 Calculating population impact...")
                 pop_val = calculate_population_impact(damage, roi).getInfo()
