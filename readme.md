@@ -1,4 +1,4 @@
-# 🛰️ SAR Battle Damage Detector (T-Test)
+# 🛰️ SAR Building Damage Detector (T-Test)
 
 A geospatial web application for detecting structural damage in conflict zones using **Sentinel-1 Synthetic Aperture Radar (SAR)** and pixel-wise statistical analysis.
 
@@ -14,7 +14,7 @@ By performing a **Welch's T-Test** on time-series radar stacks, the app identifi
 ### Key Features:
 * **Custom Time Windows:** Compare "Baseline" (pre-war) and "Assessment" (post-war) periods.
 * **Multi-Source Footprints:** Choose between **OpenStreetMap**, **Google Open Buildings**, or **Global Building Atlas** to mask results to human structures.
-* **Population Impact:** Estimate the human cost by overlaying damage maps with **WorldPop** 100m population data.
+* **Population Impact:** Estimate the human cost by overlaying damage maps with **LandScan Ukraine ~100m** January 2022 population data.
 * **Interactive T-Test:** Dynamic thresholding (T > 3.5) to separate real damage from radar "speckle."
 
 ---
