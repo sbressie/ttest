@@ -105,11 +105,12 @@ def calculate_population_impact(damage_layer, aoi):
     # 3. Mask population by damage and reduce
     impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
 
+    # Inside calculate_population_impact function
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=scale_val,
-        maxPixels=1e9
+        scale=100,
+        maxPixels=1e9  # Increased from default to 1 billion
     )
 
     return stats.get(pop_image.bandNames().get(0))
