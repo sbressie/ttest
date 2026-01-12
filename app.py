@@ -3,6 +3,7 @@ import ee
 import geemap.foliumap as geemap
 import json
 import datetime
+import os
 from google.oauth2 import service_account
 
 # --- 1. SILENT AUTHENTICATION ---
@@ -31,21 +32,46 @@ def authenticate_gee():
 
 authenticate_gee()
 
-# --- 2. HELPER FUNCTIONS ---
-def get_building_fc(aoi, source):
-    """Uses only public, high-reliability assets"""
-    if source == "Google Open Buildings (V3)":
-        # Note: Google Open Buildings currently covers Africa, Latin America,
-        return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
-    elif source == "MS Global Buildings":
+# --- 2. LOAD ISO DATA FROM REPOSITORY ---
+@st.cache_data
+def load_iso_data(file_path='iso.json'):
+    """Loads the ISO country codes from the local iso.json file."""
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        else:
+            # Fallback if file isn't found during initial setup
+            st.error(f"File {file_path} not found.")
+            return []
+    except Exception as e:
+        st.error(f"Failed to load ISO data: {e}")
+        return []
 
-        return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
-    else:
-        # Fallback to MSFP if selection varies
+iso_list = load_iso_data()
+if not iso_list:
+    st.stop()
+
+# Mapping names to codes for the dropdown
+country_names = [c['name'] for c in iso_list]
+iso_map = {c['name']: c['code'] for c in iso_list}
+
+# --- 3. HELPER FUNCTIONS ---
+def get_building_fc(aoi, source):
+    """Fetches footprints based on source."""
+    if source == "Google Open Buildings (V3)":
+        return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
+    elif source == "Microsoft Global Buildings":
+        # Using the standard global community asset path
         return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
+    return None
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD') \
+           .filterBounds(aoi) \
+           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
+           .select('VV')
+    
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
 
@@ -60,67 +86,48 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
 def calculate_population_impact(damage_layer, aoi):
-    """
-    Selects LandScan HD for Ukraine or Global LandScan for other regions.
-    """
-    # 1. Define Ukraine's rough geographic bounds to toggle datasets
-    # [minLon, minLat, maxLon, maxLat]
-    ukraine_bounds = ee.Geometry.Rectangle([22.1, 44.4, 40.2, 52.4])
-
-    # 2. Determine which asset to use based on intersection with Ukraine
-    is_ukraine = ukraine_bounds.intersects(aoi).getInfo()
-
-    if is_ukraine:
-        # High-definition LandScan for Ukraine (approx. 100m)
-        pop_image = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
-        scale_val = 100
-    else:
-        # Global LandScan (approx. 1km resolution)
-        # We take the most recent year (2022) from the collection
-        pop_image = ee.ImageCollection("projects/sat-io/open-datasets/landscan-global") \
-                      .filterDate('2022-01-01', '2022-12-31') \
-                      .first() \
-                      .select('b1') # Global LandScan typically uses 'b1' for population count
-        scale_val = 1000
-
-    # 3. Mask population by damage and reduce
+    """Uses WorldPop Global Project Population Data (100m resolution)."""
+    pop_col = ee.ImageCollection("WorldPop/GP/100m/pop") \
+                .filterBounds(aoi) \
+                .sort('year', False) 
+    
+    pop_image = pop_col.first()
     impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
 
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=scale_val,
+        scale=100,
         maxPixels=1e9
     )
+    return stats.get('population')
 
-    return stats.get(pop_image.bandNames().get(0))
+# --- 4. UI LAYOUT ---
+st.set_page_config(page_title="Global Damage Assessment", layout="wide")
+st.title("🛰️ SAR Damage & Population Analysis")
 
-# --- 3. UI LAYOUT ---
-st.title("🛰️ SAR T-Test")
+st.sidebar.header("1. Region & Data")
+# Dropdown menu populated from iso.json
+selected_country = st.sidebar.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
+current_iso = iso_map[selected_country]
+st.sidebar.info(f"ISO Code: **{current_iso}**")
 
-# Connection Indicator
-if st.session_state.get('ee_initialized'):
-    st.sidebar.success("✅ GEE Connected")
-else:
-    st.sidebar.error("❌ GEE Disconnected")
-
-st.sidebar.header("1. Data Sources")
 footprint_source = st.sidebar.selectbox(
     "Building Footprint Set",
-    ["Google Open Buildings (V3)", "MS Global Buildings"],
-    index=0 # Defaults to Google V3
+    ["Microsoft Global Buildings", "Google Open Buildings (V3)"],
+    index=0
 )
 
 st.sidebar.header("2. Analysis Dates")
 col1, col2 = st.sidebar.columns(2)
 with col1:
-    pre_s = st.date_input("Pre-War Start", datetime.date(2021, 1, 1))
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
 with col2:
-    pre_e = st.date_input("Pre-War End", datetime.date(2021, 12, 31))
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-# --- 4. EXECUTION ---
+# --- 5. EXECUTION ---
 m = geemap.Map(center=[48.379, 38.016], zoom=12)
 aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05, 37.65, 47.15")
 
@@ -129,16 +136,16 @@ if st.button("🚀 Run Analysis"):
         coords = [float(x.strip()) for x in aoi_input.split(',')]
         roi = ee.Geometry.Rectangle(coords)
 
-        with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            st.write("🔍 Loading building footprints...")
+        with st.status("Analyzing Data...", expanded=True) as status:
+            st.write(f"🔍 Loading building footprints for {selected_country}...")
             buildings = get_building_fc(roi, footprint_source)
             count = buildings.size().getInfo()
 
             if count == 0:
-                st.warning("No structures found in this area.")
-                status.update(label="No Data Found", state="error")
+                st.warning(f"No structures found in selection for {current_iso}.")
+                status.update(label="No Data", state="error")
             else:
-                st.write(f"🛰️ Processing SAR change detection for {count} structures...")
+                st.write(f"🛰️ Processing SAR for {count} structures...")
                 b_mask = ee.Image.constant(0).paint(buildings, 1)
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
 
@@ -152,9 +159,8 @@ if st.button("🚀 Run Analysis"):
                 m.addLayer(b_mask.updateMask(b_mask), {'palette': 'blue'}, 'Buildings')
                 m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
                 m.centerObject(roi, 14)
-
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-                st.success("Results ready below.")
+                
+                status.update(label="Complete!", state="complete", expanded=False)
     except Exception as e:
         st.error(f"Analysis Error: {e}")
 
