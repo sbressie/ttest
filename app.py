@@ -68,7 +68,7 @@ def calculate_population_impact(damage_layer, aoi):
 
 # --- 4. UI LAYOUT ---
 st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
-st.title("🛰️ VIDA Building Damage & Population Analysis")
+st.title("🛰️ Welch's T-Test - VIDA Buildings & Population Analysis")
 
 # Metric placeholders at the top of the analysis window
 metric_col1, metric_col2 = st.columns(2)
