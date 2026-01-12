@@ -82,8 +82,14 @@ with st.sidebar:
     basemap_choice = st.selectbox("Choose Basemap", ["OpenStreetMap", "Google Satellite"])
     st.markdown("---")
     st.header("2. Analysis Dates")
-    pre_s = st.date_input("Pre-Event Start", datetime.date(2021, 1, 1))
+    st.sidebar.header("2. Analysis Dates")
+    col1, col2 = st.sidebar.columns(2)
+with col1:
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
+with col2:
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
+    post_e = st.date_input("Assessment End", datetime.date.today())
 
 st.markdown("### 🗺️ Define Area of Interest")
 st.caption("Use [Klokantech Bounding Box](https://boundingbox.klokantech.com/) (Format: CSV) and paste below.")
