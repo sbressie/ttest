@@ -37,9 +37,9 @@ def load_iso_data(file_path='iso.json'):
         st.error(f"Failed to load ISO data: {e}")
         return []
 
-iso_list = load_iso_data() #
-country_names = [c['name'] for c in iso_list] #
-iso_map = {c['name']: c['code'] for c in iso_list} #
+iso_list = load_iso_data()
+country_names = [c['name'] for c in iso_list]
+iso_map = {c['name']: c['code'] for c in iso_list}
 
 # --- 3. HELPER FUNCTIONS ---
 def get_building_fc(aoi, iso_code):
@@ -48,15 +48,25 @@ def get_building_fc(aoi, iso_code):
     return ee.FeatureCollection(asset_path).filterBounds(aoi)
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
+    """Performs Welch's t-test between baseline (pre) and assessment (post) SAR imagery."""
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
+    
+    # Baseline Imagery
     pre = s1.filterDate(str(p_start), str(p_end))
+    # Assessment Imagery
     post = s1.filterDate(str(a_start), str(a_end))
-    def stats(col): return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
+    
+    def stats(col): 
+        return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
+    
     s_pre, s_post = stats(pre), stats(post)
+    
+    # Welch's T-Test formula
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
+    # Return damage score clipped to building mask and thresholded
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
 def calculate_population_impact(damage_layer, aoi):
@@ -68,9 +78,9 @@ def calculate_population_impact(damage_layer, aoi):
 
 # --- 4. UI LAYOUT ---
 st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
-st.title("🛰️ Welch's T-Test - VIDA Buildings & Population Analysis")
+st.title("🛰️ VIDA Building Damage & Population Analysis")
 
-# Metric placeholders at the top of the analysis window
+# Metric containers at the top
 metric_col1, metric_col2 = st.columns(2)
 pop_placeholder = metric_col1.empty()
 structure_placeholder = metric_col2.empty()
@@ -80,15 +90,15 @@ with st.sidebar:
     selected_country = st.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
     current_iso = iso_map[selected_country]
     basemap_choice = st.selectbox("Choose Basemap", ["OpenStreetMap", "Google Satellite"])
+    
     st.markdown("---")
     st.header("2. Analysis Dates")
-    st.sidebar.header("2. Analysis Dates")
-    col1, col2 = st.sidebar.columns(2)
-with col1:
+    st.subheader("Baseline (Pre-Event)")
     pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
-    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
-with col2:
     pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
+    
+    st.subheader("Assessment (Post-Event)")
+    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
 st.markdown("### 🗺️ Define Area of Interest")
@@ -111,17 +121,17 @@ if st.button("🚀 Run Analysis"):
             structure_placeholder.metric("Total Structures Found", f"{count:,}")
 
             if count > 0:
-                # FIX: Create a transparent building mask (no blue background)
+                # Create a binary mask of buildings to clip the SAR analysis
                 b_mask = ee.Image.constant(1).clip(buildings).mask()
                 
-                st.write(f"🛰️ Processing SAR for {count} structures...")
-                damage = perform_damage_test(roi, b_mask, pre_s, pre_s, post_s, datetime.date.today())
+                st.write(f"🛰️ Processing Welch's t-test for {count} structures...")
+                damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
 
-                st.write("👥 Finalizing population impact calculation...")
+                st.write("👥 Calculating population impact...")
                 pop_val = calculate_population_impact(damage, roi).getInfo()
                 pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                # Render Layers
+                # Render Layers: Blue outlines for buildings, Heatmap for damage
                 m.addLayer(buildings.style(fillColor='00000000', color='0000FF', width=1), {}, 'Building Outlines')
                 m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Clipped Building Damage')
                 m.centerObject(roi, 14)
