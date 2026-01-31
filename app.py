@@ -19,6 +19,7 @@ def authenticate_gee():
             )
             ee.Initialize(credentials, project=project_id)
             st.session_state['ee_initialized'] = True
+            st.sidebar.success("✅ Connected to GEE")
         except Exception as e:
             st.sidebar.error(f"❌ Auth Error: {e}")
 
@@ -45,16 +46,26 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     )
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
-# --- 3. SIDEBAR ---
+# --- 3. SIDEBAR & LEGEND ---
 iso_list = load_iso_data()
 country_names = [c['name'] for c in iso_list]
 iso_map = {c['name']: c['code'] for c in iso_list}
 
 with st.sidebar:
     st.header("Map Layers")
-    show_buildings = st.checkbox("Show Building Footprints", value=True)
-    show_damage = st.checkbox("Show Damage Heatmap", value=True)
+    show_buildings = st.checkbox("Show Buildings (Cyan)", value=True)
+    show_damage = st.checkbox("Show Damage (Yellow-Red)", value=True)
     
+    if show_damage:
+        st.markdown("### Damage Intensity")
+        st.markdown("""
+        <div style='line-height: 1.5;'>
+            <span style='color: #ffffb2;'>■</span> Low Damage (T > 3.5)<br>
+            <span style='color: #fd8d3c;'>■</span> Medium Damage<br>
+            <span style='color: #e31a1c;'>■</span> High Damage (T > 10)
+        </div>
+        """, unsafe_allow_html=True)
+
     st.markdown("---")
     selected_country = st.selectbox("Select Country", country_names, index=0)
     current_iso = iso_map.get(selected_country, "UKR")
@@ -80,6 +91,7 @@ if st.button("🚀 Run Analysis"):
                 
                 layers = []
                 if show_buildings:
+                    # Paint building outlines
                     b_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
                     layers.append({"sourcetype": "raster", "source": [b_url], "opacity": 0.6})
 
@@ -100,6 +112,6 @@ if st.button("🚀 Run Analysis"):
                     margin={"r":0,"t":0,"l":0,"b":0}, height=700
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                status.update(label="Complete!", state="complete")
+                status.update(label="Analysis Complete!", state="complete")
         except Exception as e:
             st.error(f"Error: {e}")
