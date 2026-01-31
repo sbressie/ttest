@@ -4,3 +4,4 @@ geemap>=0.35.0
 streamlit-folium>=0.18.0
 folium
 pydeck
+plotly
