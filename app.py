@@ -1,6 +1,6 @@
 import streamlit as st
 import ee
-import pydeck as pdk
+import plotly.graph_objects as go
 import json
 import datetime
 import os
@@ -125,36 +125,25 @@ if st.button("🚀 Run Analysis"):
                     build_mapid = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})
                     damage_mapid = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})
 
-                    # 5. Render Pydeck with Fallback Style
-                    # Mapbox satellite styles often fail without a key; 'light' or 'dark' are safer defaults
-                    view = pdk.ViewState(
-                        latitude=(coords[1]+coords[3])/2, 
-                        longitude=(coords[0]+coords[2])/2, 
-                        zoom=14
-                    )
-                    
-                    # Define Layers
-                    layers = [
-                        pdk.Layer(
-                            "TileLayer",
-                            build_mapid['tile_fetcher'].url_format,
-                            id="buildings-layer",
-                            opacity=0.8
-                        ),
-                        pdk.Layer(
-                            "TileLayer",
-                            damage_mapid['tile_fetcher'].url_format,
-                            id="damage-layer",
-                            opacity=0.9
-                        )
-                    ]
-                    
-                    st.pydeck_chart(pdk.Deck(
-                        map_style=None, # Defaults to a standard base map if Mapbox key is missing
-                        initial_view_state=view,
-                        layers=layers,
-                        tooltip={"text": "Building Damage Area"}
-                    ))
+                
+                    # Get your GEE tile URL as we did before
+map_id = ee.Image(my_image).getMapId({'palette': 'cyan'})
+tile_url = map_id['tile_fetcher'].url_format
+
+fig = go.Figure(go.Scattermapbox())
+fig.update_layout(
+    mapbox=dict(
+        style="carto-positron", # No Mapbox token needed for this style
+        layers=[{
+            "below": 'traces',
+            "sourcetype": "raster",
+            "source": [tile_url]
+        }],
+        center={"lat": 35.72, "lon": 51.40},
+        zoom=12
+    )
+)
+st.plotly_chart(fig, use_container_width=True)
                     
                     status.update(label="Analysis Complete!", state="complete")
                 else:
