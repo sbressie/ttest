@@ -76,6 +76,21 @@ def calculate_pop(damage_layer, aoi):
 # ee_initialize=False is STILL required to avoid that _credentials error
 m = geemap.Map(ee_initialize=False)
 
+Layers")
+    show_buildings = st.checkbox("Show Building Footprints", value=True)
+    show_damage = st.checkbox("Show Damage Heatmap", value=True)
+    
+    st.markdown("---")
+    st.subheader("Analysis Dates")
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1), key="p1")
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31), key="p2")
+    
+    st.subheader("Assessment Period")
+    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1), key="a1")
+    post_e = st.date_input("Assessment End", datetime.date.today(), key="a2")
+
+aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+
 # Add your layers as before
 if show_buildings:
     m.addLayer(buildings, {'color': '00FFFF'}, 'Buildings')
@@ -96,20 +111,7 @@ with st.sidebar:
     current_iso = iso_map.get(selected_country, "UKR")
     
     st.markdown("---")
-    st.subheader("Map Layers")
-    show_buildings = st.checkbox("Show Building Footprints", value=True)
-    show_damage = st.checkbox("Show Damage Heatmap", value=True)
-    
-    st.markdown("---")
-    st.subheader("Analysis Dates")
-    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1), key="p1")
-    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31), key="p2")
-    
-    st.subheader("Assessment Period")
-    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1), key="a1")
-    post_e = st.date_input("Assessment End", datetime.date.today(), key="a2")
-
-aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+    st.subheader("Map 
 
 # --- 5. EXECUTION & FOLIUM MAP ---
 if st.button("🚀 Run Analysis"):
