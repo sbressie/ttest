@@ -99,48 +99,65 @@ aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "
 # --- 5. EXECUTION & MAP ---
 if st.button("🚀 Run Analysis"):
     if not st.session_state.get('ee_initialized'):
-        st.error("Earth Engine not initialized.")
+        st.error("Earth Engine not initialized. Check sidebar for errors.")
     else:
         try:
             coords = [float(x.strip()) for x in aoi_input.split(',')]
             roi = ee.Geometry.Rectangle(coords)
 
-            with st.status("Processing...") as status:
+            with st.status("Crunching Satellite Data...") as status:
                 # 1. Fetch Buildings
                 buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
                 count = buildings.size().getInfo()
                 structure_placeholder.metric("Total Structures", f"{count:,}")
 
                 if count > 0:
-                    # 2. Damage Analysis
+                    # 2. Damage Analysis (Welch's t-test)
                     b_mask = ee.Image.constant(1).clip(buildings).mask()
                     damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
                     
-                    # 3. Population
+                    # 3. Population Impact
                     pop_val = calculate_pop(damage, roi).getInfo()
                     pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                    # 4. Generate Tile Layers for Pydeck
-                    # Building Outlines (Cyan)
-                    outline_img = ee.Image().byte().paint(buildings, 1, 1)
-                    build_url = outline_img.updateMask(outline_img).getMapId({'palette': '0000FF'})['tile_fetcher'].url_format
-                    
-                    # Damage Heatmap (Red)
-                    damage_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
+                    # 4. Generate Map IDs
+                    # We use .getMapId() directly to bypass geemap's internal checks
+                    build_mapid = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})
+                    damage_mapid = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})
 
-                    # 5. Render Pydeck
-                    view = pdk.ViewState(latitude=(coords[1]+coords[3])/2, longitude=(coords[0]+coords[2])/2, zoom=13)
+                    # 5. Render Pydeck with Fallback Style
+                    # Mapbox satellite styles often fail without a key; 'light' or 'dark' are safer defaults
+                    view = pdk.ViewState(
+                        latitude=(coords[1]+coords[3])/2, 
+                        longitude=(coords[0]+coords[2])/2, 
+                        zoom=14
+                    )
+                    
+                    # Define Layers
+                    layers = [
+                        pdk.Layer(
+                            "TileLayer",
+                            build_mapid['tile_fetcher'].url_format,
+                            id="buildings-layer",
+                            opacity=0.8
+                        ),
+                        pdk.Layer(
+                            "TileLayer",
+                            damage_mapid['tile_fetcher'].url_format,
+                            id="damage-layer",
+                            opacity=0.9
+                        )
+                    ]
                     
                     st.pydeck_chart(pdk.Deck(
-                        map_style="mapbox://styles/mapbox/satellite-v9",
+                        map_style=None, # Defaults to a standard base map if Mapbox key is missing
                         initial_view_state=view,
-                        layers=[
-                            pdk.Layer("TileLayer", build_url, id="buildings"),
-                            pdk.Layer("TileLayer", damage_url, id="damage")
-                        ]
+                        layers=layers,
+                        tooltip={"text": "Building Damage Area"}
                     ))
+                    
                     status.update(label="Analysis Complete!", state="complete")
                 else:
-                    st.warning("No buildings found in this area.")
+                    st.warning("No buildings found. Try a different bounding box.")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Render Error: {e}")
