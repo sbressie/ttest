@@ -1,6 +1,7 @@
 import streamlit as st
 import ee
-import plotly.graph_objects as go
+import geemap.foliumap as geemap
+from streamlit_folium import st_folium
 import json
 import datetime
 import os
@@ -59,7 +60,6 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     
     s_pre, s_post = stats(pre), stats(post)
     
-    # Welch's T-Test
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
@@ -75,7 +75,6 @@ def calculate_pop(damage_layer, aoi):
 # --- 4. UI LAYOUT ---
 st.title("🛰️ VIDA Building Damage & Population Analysis")
 
-# Header Metrics
 m_col1, m_col2 = st.columns(2)
 pop_placeholder = m_col1.empty()
 structure_placeholder = m_col2.empty()
@@ -87,7 +86,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("Map Layers")
-    # Toggle logic
     show_buildings = st.checkbox("Show Building Footprints", value=True)
     show_damage = st.checkbox("Show Damage Heatmap", value=True)
     
@@ -96,13 +94,13 @@ with st.sidebar:
     pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1), key="p1")
     pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31), key="p2")
     
-    st.subheader("Assessment Start")
+    st.subheader("Assessment Period")
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1), key="a1")
     post_e = st.date_input("Assessment End", datetime.date.today(), key="a2")
 
 aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# --- 5. EXECUTION & PLOTLY MAP ---
+# --- 5. EXECUTION & FOLIUM MAP ---
 if st.button("🚀 Run Analysis"):
     if not st.session_state.get('ee_initialized'):
         st.error("Earth Engine not initialized. Check sidebar for errors.")
@@ -126,44 +124,25 @@ if st.button("🚀 Run Analysis"):
                     pop_val = calculate_pop(damage, roi).getInfo()
                     pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                    # 4. Prepare Dynamic Plotly Layers
-                    plotly_layers = []
+                    # 4. Initialize Folium Map
+                    # Important: ee_initialize=False prevents the _credentials error
+                    m = geemap.Map(ee_initialize=False)
+                    m.centerObject(roi, 13)
+                    m.add_basemap("SATELLITE")
 
+                    # 5. Add Dynamic Layers based on toggles
                     if show_buildings:
-                        build_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
-                        plotly_layers.append({
-                            "sourcetype": "raster",
-                            "source": [build_url],
-                            "opacity": 0.6
-                        })
+                        outline = ee.Image().byte().paint(buildings, 1, 2)
+                        m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Building Footprints')
 
                     if show_damage:
-                        damage_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
-                        plotly_layers.append({
-                            "sourcetype": "raster",
-                            "source": [damage_url],
-                            "opacity": 0.9
-                        })
+                        damage_vis = {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}
+                        m.addLayer(damage, damage_vis, 'Damage Heatmap')
 
-                    # 5. Create Plotly Figure
-                    fig = go.Figure(go.Scattermapbox())
-
-                    fig.update_layout(
-                        mapbox=dict(
-                            style="carto-positron",
-                            layers=plotly_layers,
-                            center={"lat": (coords[1] + coords[3]) / 2, "lon": (coords[0] + coords[2]) / 2},
-                            zoom=13
-                        ),
-                        margin={"r":0,"t":0,"l":0,"b":0},
-                        height=700
-                    )
-
-                    st.plotly_chart(fig, use_container_width=True)
+                    # 6. Render Map
+                    st_folium(m, width=1100, height=600, returned_objects=[])
                     status.update(label="Analysis Complete!", state="complete")
                 else:
                     st.warning("No buildings found in this area.")
         except Exception as e:
-            st.error(f"Render Error: {e}")
-
-
+            st.error(f"Analysis/Render Error: {e}")
