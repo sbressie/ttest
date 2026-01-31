@@ -1,11 +1,12 @@
 import streamlit as st
 import ee
-import geemap
+import geemap.foliumap as geemap 
 from streamlit_folium import st_folium
 import json
 import datetime
 import os
 from google.oauth2 import service_account
+
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
@@ -87,6 +88,7 @@ if st.button("🚀 Run Analysis"):
                 m = geemap.Map(ee_initialize=False)
                 m.centerObject(roi, 13)
                 m.add_basemap("SATELLITE")
+                st_folium(m, width=1100, height=600)
 
                 # Fetch Buildings
                 buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
