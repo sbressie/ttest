@@ -1,6 +1,6 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geemap
 from streamlit_folium import st_folium
 import json
 import datetime
