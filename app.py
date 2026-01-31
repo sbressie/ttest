@@ -6,38 +6,43 @@ import datetime
 import os
 from google.oauth2 import service_account
 
-
-# --- 1. ROBUST AUTHENTICATION ---
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            # Ensure your Streamlit Secret matches your Cloud Project ID exactly
+            # Get secrets
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
-            project_id = cred_info.get('project_id')
             
-            scopes = [
-                'https://www.googleapis.com/auth/earthengine',
-                'https://www.googleapis.com/auth/cloud-platform'
-            ]
-            
+            # Create the credentials object
             credentials = service_account.Credentials.from_service_account_info(
-                cred_info, scopes=scopes
+                cred_info, 
+                scopes=['https://www.googleapis.com/auth/earthengine']
             )
             
-            # Initialize core library with explicit project linking
-            # This is critical for the Community Tier
-            ee.Initialize(credentials, project=project_id)
-            
-            # Link geemap to these same credentials to fix the AttributeError
-            geemap.ee_initialize(credentials=credentials, project=project_id)
+            # THE FIX: Use the modern initialization
+            # This sets the credentials globally for the ee module
+            ee.Initialize(
+                credentials=credentials, 
+                project=cred_info.get('project_id'),
+                opt_url=ee.data.DEFAULT_API_BASE_URL
+            )
             
             st.session_state['ee_initialized'] = True
-            st.sidebar.success(f"✅ GEE Connected (Project: {project_id})")
+            st.sidebar.success("✅ GEE Authenticated")
+            
         except Exception as e:
-            st.sidebar.error(f"❌ GEE Auth Failed: {e}")
+            st.sidebar.error(f"❌ Auth Error: {e}")
             st.session_state['ee_initialized'] = False
 
 authenticate_gee()
+
+# IMPORTANT: Call the map creation ONLY if auth succeeded
+if st.session_state.get('ee_initialized'):
+    # We pass 'ee_initialize=False' to stop geemap from trying to 
+    # run its own (broken) initialization check.
+    m = geemap.Map(ee_initialize=False) 
+    
+    # ... your building footprint logic ...
+    m.to_streamlit()
 
 # --- 2. DATA LOADING (iso.json) ---
 # Utilizing your uploaded iso.json for dynamic pathing
