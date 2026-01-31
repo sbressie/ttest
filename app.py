@@ -96,7 +96,7 @@ with st.sidebar:
 
 aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# --- 5. EXECUTION & MAP ---
+# --- 5. EXECUTION & PLOTLY MAP ---
 if st.button("🚀 Run Analysis"):
     if not st.session_state.get('ee_initialized'):
         st.error("Earth Engine not initialized. Check sidebar for errors.")
@@ -112,7 +112,7 @@ if st.button("🚀 Run Analysis"):
                 structure_placeholder.metric("Total Structures", f"{count:,}")
 
                 if count > 0:
-                    # 2. Damage Analysis (Welch's t-test)
+                    # 2. Damage Analysis
                     b_mask = ee.Image.constant(1).clip(buildings).mask()
                     damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
                     
@@ -120,33 +120,40 @@ if st.button("🚀 Run Analysis"):
                     pop_val = calculate_pop(damage, roi).getInfo()
                     pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                    # 4. Generate Map IDs
-                    # We use .getMapId() directly to bypass geemap's internal checks
-                    build_mapid = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})
-                    damage_mapid = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})
+                    # 4. Generate GEE Tile URLs
+                    # Build URL for footprints
+                    build_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
+                    # Build URL for damage
+                    damage_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
 
-                
-                    # Get your GEE tile URL as we did before
-map_id = ee.Image(my_image).getMapId({'palette': 'cyan'})
-tile_url = map_id['tile_fetcher'].url_format
+                    # 5. Create Plotly Figure
+                    fig = go.Figure(go.Scattermapbox())
 
-fig = go.Figure(go.Scattermapbox())
-fig.update_layout(
-    mapbox=dict(
-        style="carto-positron", # No Mapbox token needed for this style
-        layers=[{
-            "below": 'traces',
-            "sourcetype": "raster",
-            "source": [tile_url]
-        }],
-        center={"lat": 35.72, "lon": 51.40},
-        zoom=12
-    )
-)
-st.plotly_chart(fig, use_container_width=True)
-                    
+                    fig.update_layout(
+                        mapbox=dict(
+                            style="carto-positron",
+                            layers=[
+                                {
+                                    "sourcetype": "raster",
+                                    "source": [build_url],
+                                    "opacity": 0.7
+                                },
+                                {
+                                    "sourcetype": "raster",
+                                    "source": [damage_url],
+                                    "opacity": 0.9
+                                }
+                            ],
+                            center={"lat": (coords[1] + coords[3]) / 2, "lon": (coords[0] + coords[2]) / 2},
+                            zoom=13
+                        ),
+                        margin={"r":0,"t":0,"l":0,"b":0},
+                        height=700
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
                     status.update(label="Analysis Complete!", state="complete")
                 else:
-                    st.warning("No buildings found. Try a different bounding box.")
+                    st.warning("No buildings found in this area.")
         except Exception as e:
             st.error(f"Render Error: {e}")
