@@ -1,5 +1,6 @@
 streamlit
 earthengine-api
-geemap
 folium
 google-auth
+geemap>=0.32.0
+python-box>=7.0.0
