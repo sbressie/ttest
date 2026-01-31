@@ -6,22 +6,26 @@ import datetime
 import os
 from google.oauth2 import service_account
 
-# --- 1. SILENT AUTHENTICATION ---
+# --- 1. CONFIGURATION & AUTH ---
+st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
+
 def authenticate_gee():
+    """Initializes GEE using Service Account with v1 API compatibility."""
     if 'ee_initialized' not in st.session_state:
         try:
-            if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
-                st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
-                st.stop()
-
-            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
-            scopes = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
-            credentials = service_account.Credentials.from_service_account_info(cred_info, scopes=scopes)
-            ee.Initialize(credentials, project=cred_info.get('project_id'))
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
+            project_id = cred_info.get('project_id')
+            credentials = service_account.Credentials.from_service_account_info(
+                cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
+            )
+            # Explicitly pass project to satisfy Community Tier requirements
+            ee.Initialize(credentials, project=project_id)
             st.session_state['ee_initialized'] = True
+            st.session_state['project_id'] = project_id
+            st.sidebar.success(f"✅ GEE Connected: {project_id}")
         except Exception as e:
+            st.sidebar.error(f"❌ Auth Error: {e}")
             st.session_state['ee_initialized'] = False
-            st.error(f"🛰️ GEE Auth Failed: {e}")
 
 authenticate_gee()
 
