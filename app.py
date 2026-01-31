@@ -44,7 +44,34 @@ if st.session_state.get('ee_initialized'):
     m = geemap.Map(ee_initialize=False) 
     
     # ... your building footprint logic ...
-    m.to_streamlit()
+    # m.to_streamlit()
+f st.session_state.get('ee_initialized'):
+    # Initialize map with a specific center to verify it's working
+    # We use ee_initialize=False because we manually initialized ee earlier
+    m = geemap.Map(center=[35.72, 51.40], zoom=12, ee_initialize=False)
+    
+    # 1. Select the Iran Building layer (IRN)
+    # Using the 'painted' raster method for high-performance display
+    buildings = ee.FeatureCollection("projects/sat-io/open-datasets/VIDA_COMBINED/IRN")
+    
+    # Create a simple mask to show it's working
+    # We paint the buildings into an image
+    empty = ee.Image().byte()
+    building_layer = empty.paint(buildings, 1, 2) # Color 1, Width 2
+    
+    m.addLayer(building_layer.updateMask(building_layer), 
+               {'palette': '00FFFF'}, 
+               'Iran Building Footprints')
+
+    # 2. RENDER THE MAP
+    st.subheader("Interactive Analysis Map")
+    
+    # Use st_folium for the most reliable rendering in Streamlit Cloud
+    # This replaces m.to_streamlit()
+    st_folium(m, width=1200, height=600, returned_objects=[])
+    
+else:
+    st.error("Map cannot be displayed because GEE authentication failed.")
 
 # --- 2. DATA LOADING (iso.json) ---
 # Utilizing your uploaded iso.json for dynamic pathing
