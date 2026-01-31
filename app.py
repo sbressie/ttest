@@ -6,6 +6,7 @@ import datetime
 import os
 from google.oauth2 import service_account
 from streamlit_folium import st_folium
+import pydeck as pdk
 
 # Robust auth
 
@@ -38,22 +39,36 @@ def authenticate_gee():
 authenticate_gee()
 
 if st.session_state.get('ee_initialized'):
-    # THE KEY: Create the map with manual initialization turned OFF
-    # This prevents geemap from looking for the missing '_credentials' attribute
-    m = geemap.Map(ee_initialize=False)
-    
-    # 4. Add your Building Layer (VIDA IRN example)
+    # 1. Prepare your GEE Data (Iran Buildings)
     buildings = ee.FeatureCollection("projects/sat-io/open-datasets/VIDA_COMBINED/IRN")
     
-    # Using 'paint' as established to handle the 1M+ features safely
+    # Paint it as a raster (Cyan color)
     empty = ee.Image().byte()
-    outline = empty.paint(buildings, 1, 1)
+    building_img = empty.paint(buildings, 1, 2)
     
-    m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Buildings (Rasterized)')
+    # 2. GET THE MAP ID (The secret sauce for pydeck)
+    # This generates a URL that looks like: https://earthengine.googleapis.com/.../tiles/{z}/{x}/{y}
+    map_id_dict = ee.Image(building_img.updateMask(building_img)).getMapId({'palette': ['00FFFF']})
+    tile_url = map_id_dict['tile_fetcher'].url_format
 
-    # 5. Render with st_folium for maximum reliability
-    st_folium(m, width=1200, height=600)
+    # 3. CONSTRUCT THE PYDECK LAYER
+    view_state = pdk.ViewState(latitude=35.72, longitude=51.40, zoom=12, pitch=0)
+    
+    # We use a TileLayer to display GEE data
+    layer = pdk.Layer(
+        "TileLayer",
+        tile_url,
+        get_tile_data=None, # Not needed for simple URL strings
+    )
 
+    # 4. RENDER
+    st.write("### 🛰️ Pydeck Visualization")
+    st.pydeck_chart(pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        map_style="mapbox://styles/mapbox/satellite-v9" # Built-in satellite style
+    ))
+    
 # --- 2. DATA LOADING (iso.json) ---
 # Utilizing your uploaded iso.json for dynamic pathing
 with open('iso.json', 'r') as f:
