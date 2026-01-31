@@ -6,46 +6,63 @@ import datetime
 import os
 from google.oauth2 import service_account
 
+
+# --- 1. ROBUST AUTHENTICATION ---
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            # Load credentials from Streamlit Secrets
+            # Ensure your Streamlit Secret matches your Cloud Project ID exactly
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
-            scopes = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
-            credentials = service_account.Credentials.from_service_account_info(cred_info, scopes=scopes)
+            project_id = cred_info.get('project_id')
             
-            # 1. Initialize the core Earth Engine library
-            ee.Initialize(credentials, project=cred_info.get('project_id'))
+            scopes = [
+                'https://www.googleapis.com/auth/earthengine',
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
             
-            # 2. IMPORTANT: Manually initialize geemap with the same credentials
-            # This prevents geemap from looking for non-existent local browser tokens
-            geemap.ee_initialize(credentials=credentials, project=cred_info.get('project_id'))
+            credentials = service_account.Credentials.from_service_account_info(
+                cred_info, scopes=scopes
+            )
+            
+            # Initialize core library with explicit project linking
+            # This is critical for the Community Tier
+            ee.Initialize(credentials, project=project_id)
+            
+            # Link geemap to these same credentials to fix the AttributeError
+            geemap.ee_initialize(credentials=credentials, project=project_id)
             
             st.session_state['ee_initialized'] = True
-            st.success("🛰️ Connected to Earth Engine")
+            st.sidebar.success(f"✅ GEE Connected (Project: {project_id})")
         except Exception as e:
-            st.error(f"🛰️ GEE Auth Failed: {e}")
+            st.sidebar.error(f"❌ GEE Auth Failed: {e}")
             st.session_state['ee_initialized'] = False
 
-# Execute authentication
 authenticate_gee()
 
-# Only create the map if authentication succeeded
+# --- 2. DATA LOADING (iso.json) ---
+# Utilizing your uploaded iso.json for dynamic pathing
+with open('iso.json', 'r') as f:
+    iso_list = json.load(f)
+    iso_map = {c['name']: c['code'] for c in iso_list}
+
+# --- 3. UI & MAP ---
+st.title("🛰️ VIDA Building & Damage Analysis")
+
 if st.session_state.get('ee_initialized'):
-    # geemap.Map() will now find the credentials already set in the session
+    # The map will now find the credentials initialized above
     m = geemap.Map()
     
-    # Add your building footprints as a painted raster for performance
-    # iso_code is retrieved from your iso.json
-    iso_code = "IRN" 
-    buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{iso_code}")
+    # Example for Iran (IRN) as requested
+    target_iso = "IRN" 
+    buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{target_iso}")
     
-    # Use 'paint' to avoid browser memory crashes with 1M+ features
-    empty = ee.Image().byte()
-    outline = empty.paint(buildings, 1, 1)
-    m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Iran Buildings')
+    # Rasterized visualization for high-density vectors
+    b_mask = ee.Image(0).paint(buildings, 1)
+    m.addLayer(b_mask.updateMask(b_mask), {'palette': '00FFFF'}, 'Building Footprints')
     
     m.to_streamlit(height=600)
+else:
+    st.warning("Please verify your Earth Engine Project registration.")
 
 # --- 2. LOAD ISO DATA ---
 @st.cache_data
