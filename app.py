@@ -1,100 +1,35 @@
 import streamlit as st
 import ee
-import geemap
+import pydeck as pdk
 import json
 import datetime
 import os
 from google.oauth2 import service_account
-from streamlit_folium import st_folium
-import pydeck as pdk
 
-# Robust auth
+# --- 1. CONFIGURATION & AUTH ---
+st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
 
 def authenticate_gee():
+    """Initializes GEE using Service Account with v1 API compatibility."""
     if 'ee_initialized' not in st.session_state:
         try:
-            # 1. Load your service account info from Streamlit Secrets
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
             project_id = cred_info.get('project_id')
-            
-            # 2. Build the OAuth2 credentials
             credentials = service_account.Credentials.from_service_account_info(
-                cred_info, 
-                scopes=['https://www.googleapis.com/auth/earthengine']
+                cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
             )
-            
-            # 3. INITIALIZE THE CORE BACKEND
-            # We explicitly pass credentials and the project ID
+            # Explicitly pass project to satisfy Community Tier requirements
             ee.Initialize(credentials, project=project_id)
-            
             st.session_state['ee_initialized'] = True
-            st.session_state['creds'] = credentials # Store for geemap
-            st.session_state['project'] = project_id
+            st.session_state['project_id'] = project_id
             st.sidebar.success(f"✅ GEE Connected: {project_id}")
-            
         except Exception as e:
             st.sidebar.error(f"❌ Auth Error: {e}")
             st.session_state['ee_initialized'] = False
 
 authenticate_gee()
 
-if st.session_state.get('ee_initialized'):
-    # 1. Prepare your GEE Data (Iran Buildings)
-    buildings = ee.FeatureCollection("projects/sat-io/open-datasets/VIDA_COMBINED/IRN")
-    
-    # Paint it as a raster (Cyan color)
-    empty = ee.Image().byte()
-    building_img = empty.paint(buildings, 1, 2)
-    
-    # 2. GET THE MAP ID (The secret sauce for pydeck)
-    # This generates a URL that looks like: https://earthengine.googleapis.com/.../tiles/{z}/{x}/{y}
-    map_id_dict = ee.Image(building_img.updateMask(building_img)).getMapId({'palette': ['00FFFF']})
-    tile_url = map_id_dict['tile_fetcher'].url_format
-
-    # 3. CONSTRUCT THE PYDECK LAYER
-    view_state = pdk.ViewState(latitude=35.72, longitude=51.40, zoom=12, pitch=0)
-    
-    # We use a TileLayer to display GEE data
-    layer = pdk.Layer(
-        "TileLayer",
-        tile_url,
-        get_tile_data=None, # Not needed for simple URL strings
-    )
-
-    # 4. RENDER
-    st.write("### 🛰️ Pydeck Visualization")
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer],
-        initial_view_state=view_state,
-        map_style="mapbox://styles/mapbox/satellite-v9" # Built-in satellite style
-    ))
-    
-# --- 2. DATA LOADING (iso.json) ---
-# Utilizing your uploaded iso.json for dynamic pathing
-with open('iso.json', 'r') as f:
-    iso_list = json.load(f)
-    iso_map = {c['name']: c['code'] for c in iso_list}
-
-# --- 3. UI & MAP ---
-st.title("🛰️ VIDA Building & Damage Analysis")
-
-if st.session_state.get('ee_initialized'):
-    # The map will now find the credentials initialized above
-    m = geemap.Map()
-    
-    # Example for Iran (IRN) as requested
-    target_iso = "IRN" 
-    buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{target_iso}")
-    
-    # Rasterized visualization for high-density vectors
-    b_mask = ee.Image(0).paint(buildings, 1)
-    m.addLayer(b_mask.updateMask(b_mask), {'palette': '00FFFF'}, 'Building Footprints')
-    
-    m.to_streamlit(height=600)
-else:
-    st.warning("Please verify your Earth Engine Project registration.")
-
-# --- 2. LOAD ISO DATA ---
+# --- 2. DATA LOADING ---
 @st.cache_data
 def load_iso_data(file_path='iso.json'):
     try:
@@ -110,20 +45,13 @@ iso_list = load_iso_data()
 country_names = [c['name'] for c in iso_list]
 iso_map = {c['name']: c['code'] for c in iso_list}
 
-# --- 3. HELPER FUNCTIONS ---
-def get_building_fc(aoi, iso_code):
-    """Dynamic pathing for VIDA Global Buildings using ISO code."""
-    asset_path = f"projects/sat-io/open-datasets/VIDA_COMBINED/{iso_code}"
-    return ee.FeatureCollection(asset_path).filterBounds(aoi)
-
+# --- 3. ANALYSIS LOGIC ---
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
-    """Performs Welch's t-test between baseline (pre) and assessment (post) SAR imagery."""
+    """Welch's t-test logic for SAR change detection."""
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
            .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
     
-    # Baseline Imagery
     pre = s1.filterDate(str(p_start), str(p_end))
-    # Assessment Imagery
     post = s1.filterDate(str(a_start), str(a_end))
     
     def stats(col): 
@@ -131,85 +59,88 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
     
     s_pre, s_post = stats(pre), stats(post)
     
-    # Welch's T-Test formula
+    # Welch's T-Test
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
-    # Return damage score clipped to building mask and thresholded
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
-def calculate_population_impact(damage_layer, aoi):
-    pop_col = ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(aoi).sort('year', False) 
-    pop_image = pop_col.first()
-    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-    stats = impacted_pop_image.reduceRegion(reducer=ee.Reducer.sum(), geometry=aoi, scale=100, maxPixels=1e9)
+def calculate_pop(damage_layer, aoi):
+    pop = ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(aoi).sort('year', False).first()
+    stats = pop.updateMask(damage_layer.gt(0)).reduceRegion(
+        reducer=ee.Reducer.sum(), geometry=aoi, scale=100, maxPixels=1e9
+    )
     return stats.get('population')
 
 # --- 4. UI LAYOUT ---
-st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
 st.title("🛰️ VIDA Building Damage & Population Analysis")
 
-# Metric containers at the top
-metric_col1, metric_col2 = st.columns(2)
-pop_placeholder = metric_col1.empty()
-structure_placeholder = metric_col2.empty()
+# Header Metrics
+m_col1, m_col2 = st.columns(2)
+pop_placeholder = m_col1.empty()
+structure_placeholder = m_col2.empty()
 
 with st.sidebar:
-    st.header("1. Region & Basemap")
+    st.header("Settings")
     selected_country = st.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
-    current_iso = iso_map[selected_country]
-    basemap_choice = st.selectbox("Choose Basemap", ["OpenStreetMap", "Google Satellite"])
+    current_iso = iso_map.get(selected_country, "UKR")
     
     st.markdown("---")
-    st.header("2. Analysis Dates")
-    st.subheader("Baseline (Pre-Event)")
-    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
-    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
+    st.subheader("Baseline (Pre)")
+    pre_s = st.date_input("Start", datetime.date(2021, 1, 1), key="p1")
+    pre_e = st.date_input("End", datetime.date(2021, 12, 31), key="p2")
     
-    st.subheader("Assessment (Post-Event)")
-    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
-    post_e = st.date_input("Assessment End", datetime.date.today())
+    st.subheader("Assessment (Post)")
+    post_s = st.date_input("Start", datetime.date(2024, 6, 1), key="a1")
+    post_e = st.date_input("End", datetime.date.today(), key="a2")
 
-st.markdown("### 🗺️ Define Area of Interest")
-st.caption("Use [Klokantech Bounding Box](https://boundingbox.klokantech.com/) (Format: CSV) and paste below.")
 aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# --- 5. MAP & EXECUTION ---
-m = geemap.Map()
-m.add_basemap("SATELLITE" if basemap_choice == "Google Satellite" else "ROADMAP")
-
+# --- 5. EXECUTION & MAP ---
 if st.button("🚀 Run Analysis"):
-    try:
-        coords = [float(x.strip()) for x in aoi_input.split(',')]
-        roi = ee.Geometry.Rectangle(coords)
+    if not st.session_state.get('ee_initialized'):
+        st.error("Earth Engine not initialized.")
+    else:
+        try:
+            coords = [float(x.strip()) for x in aoi_input.split(',')]
+            roi = ee.Geometry.Rectangle(coords)
 
-        with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            st.write(f"🔍 Fetching {selected_country} ({current_iso}) footprints...")
-            buildings = get_building_fc(roi, current_iso)
-            count = buildings.size().getInfo()
-            structure_placeholder.metric("Total Structures Found", f"{count:,}")
+            with st.status("Processing...") as status:
+                # 1. Fetch Buildings
+                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
+                count = buildings.size().getInfo()
+                structure_placeholder.metric("Total Structures", f"{count:,}")
 
-            if count > 0:
-                # Create a binary mask of buildings to clip the SAR analysis
-                b_mask = ee.Image.constant(1).clip(buildings).mask()
-                
-                st.write(f"🛰️ Processing Welch's t-test for {count} structures...")
-                damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                if count > 0:
+                    # 2. Damage Analysis
+                    b_mask = ee.Image.constant(1).clip(buildings).mask()
+                    damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                    
+                    # 3. Population
+                    pop_val = calculate_pop(damage, roi).getInfo()
+                    pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                st.write("👥 Calculating population impact...")
-                pop_val = calculate_population_impact(damage, roi).getInfo()
-                pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
+                    # 4. Generate Tile Layers for Pydeck
+                    # Building Outlines (Cyan)
+                    outline_img = ee.Image().byte().paint(buildings, 1, 1)
+                    build_url = outline_img.updateMask(outline_img).getMapId({'palette': '0000FF'})['tile_fetcher'].url_format
+                    
+                    # Damage Heatmap (Red)
+                    damage_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
 
-                # Render Layers: Blue outlines for buildings, Heatmap for damage
-                m.addLayer(buildings.style(fillColor='00000000', color='0000FF', width=1), {}, 'Building Outlines')
-                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Clipped Building Damage')
-                m.centerObject(roi, 14)
-                
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-            else:
-                st.warning("No buildings found in this AOI.")
-                status.update(label="No Data Found", state="error")
-    except Exception as e:
-        st.error(f"Analysis Error: {e}")
-
-m.to_streamlit(height=600)
+                    # 5. Render Pydeck
+                    view = pdk.ViewState(latitude=(coords[1]+coords[3])/2, longitude=(coords[0]+coords[2])/2, zoom=13)
+                    
+                    st.pydeck_chart(pdk.Deck(
+                        map_style="mapbox://styles/mapbox/satellite-v9",
+                        initial_view_state=view,
+                        layers=[
+                            pdk.Layer("TileLayer", build_url, id="buildings"),
+                            pdk.Layer("TileLayer", damage_url, id="damage")
+                        ]
+                    ))
+                    status.update(label="Analysis Complete!", state="complete")
+                else:
+                    st.warning("No buildings found in this area.")
+        except Exception as e:
+            st.error(f"Error: {e}")
