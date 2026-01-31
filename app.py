@@ -72,6 +72,17 @@ def calculate_pop(damage_layer, aoi):
     )
     return stats.get('population')
 
+# Create the map object using the main geemap class
+# ee_initialize=False is STILL required to avoid that _credentials error
+m = geemap.Map(ee_initialize=False)
+
+# Add your layers as before
+if show_buildings:
+    m.addLayer(buildings, {'color': '00FFFF'}, 'Buildings')
+
+# Render
+st_folium(m, width=1100, height=600)
+
 # --- 4. UI LAYOUT ---
 st.title("🛰️ VIDA Building Damage & Population Analysis")
 
