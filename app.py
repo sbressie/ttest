@@ -8,28 +8,28 @@ from google.oauth2 import service_account
 from streamlit_folium import st_folium
 
 # Robust auth
+
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            # Get secrets
+            # 1. Load your service account info from Streamlit Secrets
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
+            project_id = cred_info.get('project_id')
             
-            # Create the credentials object
+            # 2. Build the OAuth2 credentials
             credentials = service_account.Credentials.from_service_account_info(
                 cred_info, 
                 scopes=['https://www.googleapis.com/auth/earthengine']
             )
             
-            # THE FIX: Use the modern initialization
-            # This sets the credentials globally for the ee module
-            ee.Initialize(
-                credentials=credentials, 
-                project=cred_info.get('project_id'),
-                opt_url=ee.data.DEFAULT_API_BASE_URL
-            )
+            # 3. INITIALIZE THE CORE BACKEND
+            # We explicitly pass credentials and the project ID
+            ee.Initialize(credentials, project=project_id)
             
             st.session_state['ee_initialized'] = True
-            st.sidebar.success("✅ GEE Authenticated")
+            st.session_state['creds'] = credentials # Store for geemap
+            st.session_state['project'] = project_id
+            st.sidebar.success(f"✅ GEE Connected: {project_id}")
             
         except Exception as e:
             st.sidebar.error(f"❌ Auth Error: {e}")
@@ -37,18 +37,22 @@ def authenticate_gee():
 
 authenticate_gee()
 
-# IMPORTANT: Call the map creation ONLY if auth succeeded
 if st.session_state.get('ee_initialized'):
-    # We pass 'ee_initialize=False' to stop geemap from trying to 
-    # run its own (broken) initialization check.
-    m = geemap.Map(ee_initialize=False) 
+    # THE KEY: Create the map with manual initialization turned OFF
+    # This prevents geemap from looking for the missing '_credentials' attribute
+    m = geemap.Map(ee_initialize=False)
     
-    # ... your building footprint logic ...
-    # m.to_streamlit()
+    # 4. Add your Building Layer (VIDA IRN example)
+    buildings = ee.FeatureCollection("projects/sat-io/open-datasets/VIDA_COMBINED/IRN")
+    
+    # Using 'paint' as established to handle the 1M+ features safely
+    empty = ee.Image().byte()
+    outline = empty.paint(buildings, 1, 1)
+    
+    m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Buildings (Rasterized)')
 
-    
-else:
-    st.error("Map cannot be displayed because GEE authentication failed.")
+    # 5. Render with st_folium for maximum reliability
+    st_folium(m, width=1200, height=600)
 
 # --- 2. DATA LOADING (iso.json) ---
 # Utilizing your uploaded iso.json for dynamic pathing
