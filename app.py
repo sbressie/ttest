@@ -1,6 +1,6 @@
 import streamlit as st
-import ee
-import geemap  # Changed from import geemap.foliumap
+import ee  # This will now correctly load Google Earth Engine
+import geemap
 from streamlit_folium import st_folium
 import json
 import datetime
