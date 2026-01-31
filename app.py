@@ -10,20 +10,29 @@ from google.oauth2 import service_account
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
-                st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
-                st.stop()
-
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
             scopes = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
             credentials = service_account.Credentials.from_service_account_info(cred_info, scopes=scopes)
+            
+            # 1. Initialize the core EE library
             ee.Initialize(credentials, project=cred_info.get('project_id'))
+            
+            # 2. NEW: Force geemap to use these same credentials
+            import geemap
+            geemap.ee_initialize(credentials=credentials, project=cred_info.get('project_id'))
+            
             st.session_state['ee_initialized'] = True
         except Exception as e:
-            st.session_state['ee_initialized'] = False
             st.error(f"🛰️ GEE Auth Failed: {e}")
-
+            
+# Ensure auth runs BEFORE calling geemap.Map()
 authenticate_gee()
+
+if st.session_state.get('ee_initialized'):
+    # geemap.Map() will now find the credentials already set in the session
+    m = geemap.Map() 
+else:
+    st.error("Please check your Earth Engine credentials.")
 
 # --- 2. LOAD ISO DATA ---
 @st.cache_data
