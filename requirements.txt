@@ -1,6 +1,6 @@
 google-auth
 earthengine-api>=1.0.0
-pydeck
+geemap>=0.35.0
 streamlit-folium>=0.18.0
 folium
-geemap>=0.35.0
+pydeck
