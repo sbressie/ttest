@@ -1,16 +1,15 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import plotly.graph_objects as go
 import json
 import datetime
 import os
 from google.oauth2 import service_account
 
-# --- 1. CONFIGURATION & AUTH ---
+# --- 1. CONFIG & AUTH ---
 st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
 
 def authenticate_gee():
-    """Initializes GEE using Service Account with v1 API compatibility."""
     if 'ee_initialized' not in st.session_state:
         try:
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
@@ -18,133 +17,101 @@ def authenticate_gee():
             credentials = service_account.Credentials.from_service_account_info(
                 cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
             )
-            # Explicitly pass project to satisfy Community Tier requirements
             ee.Initialize(credentials, project=project_id)
             st.session_state['ee_initialized'] = True
-            st.session_state['project_id'] = project_id
-            st.sidebar.success(f"✅ GEE Connected: {project_id}")
+            st.sidebar.success("✅ Connected to GEE")
         except Exception as e:
             st.sidebar.error(f"❌ Auth Error: {e}")
-            st.session_state['ee_initialized'] = False
 
 authenticate_gee()
 
-# --- 2. LOAD ISO DATA ---
+# --- 2. DATA HELPERS ---
 @st.cache_data
 def load_iso_data(file_path='iso.json'):
-    try:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return []
-    except Exception as e:
-        st.error(f"Failed to load ISO data: {e}")
-        return []
+    if os.path.exists(file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return [{"name": "Ukraine", "code": "UKR"}]
 
+def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
+           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
+    pre = s1.filterDate(str(p_start), str(p_end))
+    post = s1.filterDate(str(a_start), str(a_end))
+    def stats(col): 
+        return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
+    s_pre, s_post = stats(pre), stats(post)
+    t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
+        (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
+    )
+    return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
+
+# --- 3. SIDEBAR & LEGEND ---
 iso_list = load_iso_data()
 country_names = [c['name'] for c in iso_list]
 iso_map = {c['name']: c['code'] for c in iso_list}
 
-# --- 3. HELPER FUNCTIONS ---
-def get_building_fc(aoi, iso_code):
-    """Dynamic pathing for VIDA Global Buildings using ISO code."""
-    asset_path = f"projects/sat-io/open-datasets/VIDA_COMBINED/{iso_code}"
-    return ee.FeatureCollection(asset_path).filterBounds(aoi)
-
-def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
-    """Performs Welch's t-test between baseline (pre) and assessment (post) SAR imagery."""
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
-           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
-
-    # Baseline Imagery
-    pre = s1.filterDate(str(p_start), str(p_end))
-    # Assessment Imagery
-    post = s1.filterDate(str(a_start), str(a_end))
-
-    def stats(col):
-        return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
-
-    s_pre, s_post = stats(pre), stats(post)
-
-    # Welch's T-Test formula
-    t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
-        (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
-    )
-    # Return damage score clipped to building mask and thresholded
-    return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
-
-def calculate_population_impact(damage_layer, aoi):
-    pop_col = ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(aoi).sort('year', False)
-    pop_image = pop_col.first()
-    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-    stats = impacted_pop_image.reduceRegion(reducer=ee.Reducer.sum(), geometry=aoi, scale=100, maxPixels=1e9)
-    return stats.get('population')
-
-# --- 4. UI LAYOUT ---
-st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
-st.title("🛰️ VIDA Building Damage & Population Analysis")
-
-# Metric containers at the top
-metric_col1, metric_col2 = st.columns(2)
-pop_placeholder = metric_col1.empty()
-structure_placeholder = metric_col2.empty()
-
 with st.sidebar:
-    st.header("1. Region & Basemap")
-    selected_country = st.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
-    current_iso = iso_map[selected_country]
-    basemap_choice = st.selectbox("Choose Basemap", ["OpenStreetMap", "Google Satellite"])
+    st.header("Map Layers")
+    show_buildings = st.checkbox("Show Buildings (Cyan)", value=True)
+    show_damage = st.checkbox("Show Damage (Yellow-Red)", value=True)
+    
+    if show_damage:
+        st.markdown("### Damage Intensity")
+        st.markdown("""
+        <div style='line-height: 1.5;'>
+            <span style='color: #ffffb2;'>■</span> Low Damage (T > 3.5)<br>
+            <span style='color: #fd8d3c;'>■</span> Medium Damage<br>
+            <span style='color: #e31a1c;'>■</span> High Damage (T > 10)
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.header("2. Analysis Dates")
-    st.subheader("Baseline (Pre-Event)")
+    selected_country = st.selectbox("Select Country", country_names, index=0)
+    current_iso = iso_map.get(selected_country, "UKR")
+    
+    st.subheader("Analysis Dates")
     pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
     pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
-
-    st.subheader("Assessment (Post-Event)")
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-st.markdown("### 🗺️ Define Area of Interest")
-st.caption("Use [Klokantech Bounding Box](https://boundingbox.klokantech.com/) (Format: CSV) and paste below.")
+# --- 4. MAIN UI ---
+st.title("🛰️ VIDA Building Damage & Population Analysis")
 aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# --- 5. MAP & EXECUTION ---
-m = geemap.Map()
-m.add_basemap("SATELLITE" if basemap_choice == "Google Satellite" else "ROADMAP")
-
 if st.button("🚀 Run Analysis"):
-    try:
-        coords = [float(x.strip()) for x in aoi_input.split(',')]
-        roi = ee.Geometry.Rectangle(coords)
+    if st.session_state.get('ee_initialized'):
+        try:
+            coords = [float(x.strip()) for x in aoi_input.split(',')]
+            roi = ee.Geometry.Rectangle(coords)
 
-        with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            st.write(f"🔍 Fetching {selected_country} ({current_iso}) footprints...")
-            buildings = get_building_fc(roi, current_iso)
-            count = buildings.size().getInfo()
-            structure_placeholder.metric("Total Structures Found", f"{count:,}")
+            with st.status("Fetching GEE Tiles...") as status:
+                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
+                
+                layers = []
+                if show_buildings:
+                    # Paint building outlines
+                    b_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
+                    layers.append({"sourcetype": "raster", "source": [b_url], "opacity": 0.6})
 
-            if count > 0:
-                # Create a binary mask of buildings to clip the SAR analysis
-                b_mask = ee.Image.constant(1).clip(buildings).mask()
+                if show_damage:
+                    b_mask = ee.Image.constant(1).clip(buildings).mask()
+                    damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                    d_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
+                    layers.append({"sourcetype": "raster", "source": [d_url], "opacity": 0.9})
 
-                st.write(f"🛰️ Processing Welch's t-test for {count} structures...")
-                damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
-
-                st.write("👥 Calculating population impact...")
-                pop_val = calculate_population_impact(damage, roi).getInfo()
-                pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
-
-                # Render Layers: Blue outlines for buildings, Heatmap for damage
-                m.addLayer(buildings.style(fillColor='00000000', color='0000FF', width=1), {}, 'Building Outlines')
-                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Clipped Building Damage')
-                m.centerObject(roi, 14)
-
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-            else:
-                st.warning("No buildings found in this AOI.")
-                status.update(label="No Data Found", state="error")
-    except Exception as e:
-        st.error(f"Analysis Error: {e}")
-
-m.to_streamlit(height=600)
+                fig = go.Figure(go.Scattermapbox())
+                fig.update_layout(
+                    mapbox=dict(
+                        style="carto-positron",
+                        layers=layers,
+                        center={"lat": (coords[1] + coords[3]) / 2, "lon": (coords[0] + coords[2]) / 2},
+                        zoom=13
+                    ),
+                    margin={"r":0,"t":0,"l":0,"b":0}, height=700
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                status.update(label="Analysis Complete!", state="complete")
+        except Exception as e:
+            st.error(f"Error: {e}")
