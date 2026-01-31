@@ -1,6 +1,5 @@
-earthengine-api
 google-auth
-geemap==0.34.3
 ipython==8.31.0
 streamlit-folium
-
+geemap>=0.35.0
+earthengine-api>=1.0.0
