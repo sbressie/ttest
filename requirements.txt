@@ -1,9 +1,9 @@
 google-auth
 ipython==8.31.0
-streamlit-folium
-geemap>=0.35.0
 earthengine-api>=1.0.0
 pydeck
 streamlit-folium
 folium
 ee
+geemap==0.31.0
+streamlit-folium==0.18.0
