@@ -126,7 +126,7 @@ if st.button("🚀 Run Analysis"):
 
                     # 4. Initialize Folium Map
                     # Important: ee_initialize=False prevents the _credentials error
-                    m = geemap.Map(ee_initialize=False)
+                    m = geemap.Map(ee_initialize=False) # This will use the Folium backend by default in non-Jupyter environments
                     m.centerObject(roi, 13)
                     m.add_basemap("SATELLITE")
 
