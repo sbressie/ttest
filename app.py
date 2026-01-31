@@ -6,33 +6,46 @@ import datetime
 import os
 from google.oauth2 import service_account
 
-# --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
+            # Load credentials from Streamlit Secrets
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
             scopes = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
             credentials = service_account.Credentials.from_service_account_info(cred_info, scopes=scopes)
             
-            # 1. Initialize the core EE library
+            # 1. Initialize the core Earth Engine library
             ee.Initialize(credentials, project=cred_info.get('project_id'))
             
-            # 2. NEW: Force geemap to use these same credentials
-            import geemap
+            # 2. IMPORTANT: Manually initialize geemap with the same credentials
+            # This prevents geemap from looking for non-existent local browser tokens
             geemap.ee_initialize(credentials=credentials, project=cred_info.get('project_id'))
             
             st.session_state['ee_initialized'] = True
+            st.success("🛰️ Connected to Earth Engine")
         except Exception as e:
             st.error(f"🛰️ GEE Auth Failed: {e}")
-            
-# Ensure auth runs BEFORE calling geemap.Map()
+            st.session_state['ee_initialized'] = False
+
+# Execute authentication
 authenticate_gee()
 
+# Only create the map if authentication succeeded
 if st.session_state.get('ee_initialized'):
     # geemap.Map() will now find the credentials already set in the session
-    m = geemap.Map() 
-else:
-    st.error("Please check your Earth Engine credentials.")
+    m = geemap.Map()
+    
+    # Add your building footprints as a painted raster for performance
+    # iso_code is retrieved from your iso.json
+    iso_code = "IRN" 
+    buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{iso_code}")
+    
+    # Use 'paint' to avoid browser memory crashes with 1M+ features
+    empty = ee.Image().byte()
+    outline = empty.paint(buildings, 1, 1)
+    m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Iran Buildings')
+    
+    m.to_streamlit(height=600)
 
 # --- 2. LOAD ISO DATA ---
 @st.cache_data
