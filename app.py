@@ -86,15 +86,85 @@ with st.sidebar:
     current_iso = iso_map.get(selected_country, "UKR")
     
     st.markdown("---")
-    st.subheader("Baseline (Pre)")
-    pre_s = st.date_input("Start", datetime.date(2021, 1, 1), key="p1")
-    pre_e = st.date_input("End", datetime.date(2021, 12, 31), key="p2")
+    st.subheader("Map Layers")
+    # Toggle logic
+    show_buildings = st.checkbox("Show Building Footprints", value=True)
+    show_damage = st.checkbox("Show Damage Heatmap", value=True)
     
-    st.subheader("Assessment (Post)")
-    post_s = st.date_input("Start", datetime.date(2024, 6, 1), key="a1")
-    post_e = st.date_input("End", datetime.date.today(), key="a2")
+    st.markdown("---")
+    st.subheader("Analysis Dates")
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1), key="p1")
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31), key="p2")
+    
+    st.subheader("Assessment Start")
+    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1), key="a1")
+    post_e = st.date_input("Assessment End", datetime.date.today(), key="a2")
 
 aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+
+# --- 5. EXECUTION & PLOTLY MAP ---
+if st.button("🚀 Run Analysis"):
+    if not st.session_state.get('ee_initialized'):
+        st.error("Earth Engine not initialized. Check sidebar for errors.")
+    else:
+        try:
+            coords = [float(x.strip()) for x in aoi_input.split(',')]
+            roi = ee.Geometry.Rectangle(coords)
+
+            with st.status("Crunching Satellite Data...") as status:
+                # 1. Fetch Buildings
+                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
+                count = buildings.size().getInfo()
+                structure_placeholder.metric("Total Structures", f"{count:,}")
+
+                if count > 0:
+                    # 2. Damage Analysis
+                    b_mask = ee.Image.constant(1).clip(buildings).mask()
+                    damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+                    
+                    # 3. Population Impact
+                    pop_val = calculate_pop(damage, roi).getInfo()
+                    pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
+
+                    # 4. Prepare Dynamic Plotly Layers
+                    plotly_layers = []
+
+                    if show_buildings:
+                        build_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
+                        plotly_layers.append({
+                            "sourcetype": "raster",
+                            "source": [build_url],
+                            "opacity": 0.6
+                        })
+
+                    if show_damage:
+                        damage_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
+                        plotly_layers.append({
+                            "sourcetype": "raster",
+                            "source": [damage_url],
+                            "opacity": 0.9
+                        })
+
+                    # 5. Create Plotly Figure
+                    fig = go.Figure(go.Scattermapbox())
+
+                    fig.update_layout(
+                        mapbox=dict(
+                            style="carto-positron",
+                            layers=plotly_layers,
+                            center={"lat": (coords[1] + coords[3]) / 2, "lon": (coords[0] + coords[2]) / 2},
+                            zoom=13
+                        ),
+                        margin={"r":0,"t":0,"l":0,"b":0},
+                        height=700
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+                    status.update(label="Analysis Complete!", state="complete")
+                else:
+                    st.warning("No buildings found in this area.")
+        except Exception as e:
+            st.error(f"Render Error: {e}")
 
 # --- 5. EXECUTION & PLOTLY MAP ---
 if st.button("🚀 Run Analysis"):
