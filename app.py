@@ -5,7 +5,9 @@ import json
 import datetime
 import os
 from google.oauth2 import service_account
+from streamlit_folium import st_folium
 
+# Robust auth
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
