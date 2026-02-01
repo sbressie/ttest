@@ -25,6 +25,17 @@ def authenticate_gee():
 
 authenticate_gee()
 
+st.markdown(
+    """
+    <style>
+    .js-plotly-plot {
+        z-index: 1;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # --- 2. DATA HELPERS ---
 @st.cache_data
 def load_iso_data(file_path='iso.json'):
