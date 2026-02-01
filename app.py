@@ -1,128 +1,161 @@
 import streamlit as st
 import ee
-import plotly.graph_objects as go
+import geemap.foliumap as geemap
 import json
 import datetime
-import os
 from google.oauth2 import service_account
 
-# --- 1. CONFIG & AUTH ---
-st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
-
+# --- 1. SILENT AUTHENTICATION ---
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
-            project_id = cred_info.get('project_id')
+            if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
+                st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
+                st.stop()
+
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
+            scopes = [
+                'https://www.googleapis.com/auth/earthengine',
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
+
             credentials = service_account.Credentials.from_service_account_info(
-                cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
+                cred_info, scopes=scopes
             )
-            ee.Initialize(credentials, project=project_id)
+
+            ee.Initialize(credentials, project=cred_info.get('project_id'))
             st.session_state['ee_initialized'] = True
-            st.sidebar.success("✅ Connected to GEE")
         except Exception as e:
-            st.sidebar.error(f"❌ Auth Error: {e}")
+            st.session_state['ee_initialized'] = False
+            st.error(f"🛰️ GEE Auth Failed: {e}")
 
 authenticate_gee()
 
-st.markdown(
-    """
-    <style>
-    .js-plotly-plot {
-        z-index: 1;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# --- 2. HELPER FUNCTIONS ---
+def get_building_fc(aoi, source):
+    """Uses only public, high-reliability assets"""
+    if source == "Google Open Buildings (V3)":
+        # Note: Google Open Buildings currently covers Africa, Latin America,
+        return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
+    elif source == "MS Global Buildings":
 
-# --- 2. DATA HELPERS ---
-@st.cache_data
-def load_iso_data(file_path='iso.json'):
-    if os.path.exists(file_path):
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return [{"name": "Ukraine", "code": "UKR"}]
+        return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
+    else:
+        # Fallback to MSFP if selection varies
+        return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
-           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
-    def stats(col): 
+
+    def stats(col):
         return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
+
     s_pre, s_post = stats(pre), stats(post)
+
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
-# --- 3. SIDEBAR & LEGEND ---
-iso_list = load_iso_data()
-country_names = [c['name'] for c in iso_list]
-iso_map = {c['name']: c['code'] for c in iso_list}
+def calculate_population_impact(damage_layer, aoi):
+    """
+    Selects LandScan HD for Ukraine or Global LandScan for other regions.
+    """
+    # 1. Define Ukraine's rough geographic bounds to toggle datasets
+    # [minLon, minLat, maxLon, maxLat]
+    ukraine_bounds = ee.Geometry.Rectangle([22.1, 44.4, 40.2, 52.4])
 
-with st.sidebar:
-    st.header("Map Layers")
-    show_buildings = st.checkbox("Show Buildings (Cyan)", value=True)
-    show_damage = st.checkbox("Show Damage (Yellow-Red)", value=True)
-    
-    if show_damage:
-        st.markdown("### Damage Intensity")
-        st.markdown("""
-        <div style='line-height: 1.5;'>
-            <span style='color: #ffffb2;'>■</span> Low Damage (T > 3.5)<br>
-            <span style='color: #fd8d3c;'>■</span> Medium Damage<br>
-            <span style='color: #e31a1c;'>■</span> High Damage (T > 10)
-        </div>
-        """, unsafe_allow_html=True)
+    # 2. Determine which asset to use based on intersection with Ukraine
+    is_ukraine = ukraine_bounds.intersects(aoi).getInfo()
 
-    st.markdown("---")
-    selected_country = st.selectbox("Select Country", country_names, index=0)
-    current_iso = iso_map.get(selected_country, "UKR")
-    
-    st.subheader("Analysis Dates")
-    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
-    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
+    if is_ukraine:
+        # High-definition LandScan for Ukraine (approx. 100m)
+        pop_image = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
+        scale_val = 100
+    else:
+        # Global LandScan (approx. 1km resolution)
+        # We take the most recent year (2022) from the collection
+        pop_image = ee.ImageCollection("projects/sat-io/open-datasets/landscan-global") \
+                      .filterDate('2022-01-01', '2022-12-31') \
+                      .first() \
+                      .select('b1') # Global LandScan typically uses 'b1' for population count
+        scale_val = 1000
+
+    # 3. Mask population by damage and reduce
+    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
+
+    stats = impacted_pop_image.reduceRegion(
+        reducer=ee.Reducer.sum(),
+        geometry=aoi,
+        scale=scale_val,
+        maxPixels=1e9
+    )
+
+    return stats.get(pop_image.bandNames().get(0))
+
+# --- 3. UI LAYOUT ---
+st.title("🛰️ SAR T-Test")
+
+# Connection Indicator
+if st.session_state.get('ee_initialized'):
+    st.sidebar.success("✅ GEE Connected")
+else:
+    st.sidebar.error("❌ GEE Disconnected")
+
+st.sidebar.header("1. Data Sources")
+footprint_source = st.sidebar.selectbox(
+    "Building Footprint Set",
+    ["Google Open Buildings (V3)", "MS Global Buildings"],
+    index=0 # Defaults to Google V3
+)
+
+st.sidebar.header("2. Analysis Dates")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    pre_s = st.date_input("Pre-War Start", datetime.date(2021, 1, 1))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
+with col2:
+    pre_e = st.date_input("Pre-War End", datetime.date(2021, 12, 31))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-# --- 4. MAIN UI ---
-st.title("🛰️ VIDA Building Damage & Population Analysis")
-aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+# --- 4. EXECUTION ---
+m = geemap.Map(center=[48.379, 38.016], zoom=12)
+aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05, 37.65, 47.15")
 
 if st.button("🚀 Run Analysis"):
-    if st.session_state.get('ee_initialized'):
-        try:
-            coords = [float(x.strip()) for x in aoi_input.split(',')]
-            roi = ee.Geometry.Rectangle(coords)
+    try:
+        coords = [float(x.strip()) for x in aoi_input.split(',')]
+        roi = ee.Geometry.Rectangle(coords)
 
-            with st.status("Fetching GEE Tiles...") as status:
-                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
-                
-                layers = []
-                if show_buildings:
-                    # Paint building outlines
-                    b_url = ee.Image().byte().paint(buildings, 1, 2).getMapId({'palette': '00FFFF'})['tile_fetcher'].url_format
-                    layers.append({"sourcetype": "raster", "source": [b_url], "opacity": 0.6})
+        with st.status("Analyzing Satellite Data...", expanded=True) as status:
+            st.write("🔍 Loading building footprints...")
+            buildings = get_building_fc(roi, footprint_source)
+            count = buildings.size().getInfo()
 
-                if show_damage:
-                    b_mask = ee.Image.constant(1).clip(buildings).mask()
-                    damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
-                    d_url = damage.getMapId({'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']})['tile_fetcher'].url_format
-                    layers.append({"sourcetype": "raster", "source": [d_url], "opacity": 0.9})
+            if count == 0:
+                st.warning("No structures found in this area.")
+                status.update(label="No Data Found", state="error")
+            else:
+                st.write(f"🛰️ Processing SAR change detection for {count} structures...")
+                b_mask = ee.Image.constant(0).paint(buildings, 1)
+                damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
 
-                fig = go.Figure(go.Scattermapbox())
-                fig.update_layout(
-                    mapbox=dict(
-                        style="carto-positron",
-                        layers=layers,
-                        center={"lat": (coords[1] + coords[3]) / 2, "lon": (coords[0] + coords[2]) / 2},
-                        zoom=13
-                    ),
-                    margin={"r":0,"t":0,"l":0,"b":0}, height=700
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                status.update(label="Analysis Complete!", state="complete")
-        except Exception as e:
-            st.error(f"Error: {e}")
+                st.write("👥 Calculating population impact...")
+                pop_val = calculate_population_impact(damage, roi).getInfo()
+
+                if pop_val is not None:
+                    st.metric("Estimated People Affected", f"{int(pop_val):,}")
+
+                st.write("🗺️ Finalizing Map...")
+                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'blue'}, 'Buildings')
+                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
+                m.centerObject(roi, 14)
+
+                status.update(label="Analysis Complete!", state="complete", expanded=False)
+                st.success("Results ready below.")
+    except Exception as e:
+        st.error(f"Analysis Error: {e}")
+
+m.to_streamlit(height=600)
