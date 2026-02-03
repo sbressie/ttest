@@ -2,3 +2,6 @@ google-auth
 earthengine-api>=1.0.0
 plotly
 streamlit
+geemap
+folium
+
