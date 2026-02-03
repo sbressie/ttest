@@ -147,6 +147,8 @@ if st.button("🚀 Run Welch's T-Test Analysis"):
                 # 4. Map Setup
                 m = geemap.Map(basemap='HYBRID')
                 m.centerObject(roi, 16)
+                m.to_streamlit(height=600)
+                
 
                 if show_footprints:
                     outline = ee.Image().paint(buildings, 0, 1.5) # Thicker outline for visibility
