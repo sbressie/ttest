@@ -1,6 +1,7 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geemap as geemap
+import folium as foliumap
 import json
 import datetime
 import pandas as pd
