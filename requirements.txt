@@ -2,6 +2,7 @@ google-auth
 earthengine-api>=1.0.0
 plotly
 streamlit
-geemap
+geemap>=0.30.0
 folium
+python-box==6.1.0
 
