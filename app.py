@@ -3,159 +3,191 @@ import ee
 import geemap.foliumap as geemap
 import json
 import datetime
+import pandas as pd
 from google.oauth2 import service_account
 
-# --- 1. SILENT AUTHENTICATION ---
+# --- 1. CONFIG & AUTH ---
+st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
+
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
         try:
-            if "EARTHENGINE_SERVICE_ACCOUNT" not in st.secrets:
-                st.error("Secret 'EARTHENGINE_SERVICE_ACCOUNT' not found.")
-                st.stop()
-
-            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
-            scopes = [
-                'https://www.googleapis.com/auth/earthengine',
-                'https://www.googleapis.com/auth/cloud-platform'
-            ]
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
+            if hasattr(cred_info, "to_dict"):
+                cred_info = cred_info.to_dict()
 
             credentials = service_account.Credentials.from_service_account_info(
-                cred_info, scopes=scopes
+                cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
             )
-
             ee.Initialize(credentials, project=cred_info.get('project_id'))
             st.session_state['ee_initialized'] = True
         except Exception as e:
-            st.session_state['ee_initialized'] = False
-            st.error(f"🛰️ GEE Auth Failed: {e}")
+            st.sidebar.error(f"❌ Auth Error: {e}")
 
 authenticate_gee()
 
-# --- 2. HELPER FUNCTIONS ---
-def get_building_fc(aoi, source):
-    """Uses only public, high-reliability assets"""
-    if source == "Google Open Buildings (V3)":
-        # Note: Google Open Buildings currently covers Africa, Latin America,
-        return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
-    elif source == "MS Global Buildings":
+# --- 2. DATA HELPERS ---
+@st.cache_data
+def load_iso_data():
+    try:
+        with open('iso.json', 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return [{"name": "Ukraine", "code": "UKR"}]
 
-        return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
-    else:
-        # Fallback to MSFP if selection varies
-        return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
-
-def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
+def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, threshold):
+    """
+    Implements Welch's t-test:
+    t = |mean1 - mean2| / sqrt( (var1/n1) + (var2/n2) )
+    """
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
+
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
 
-    def stats(col):
-        return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
+    def get_stats(col):
+        return {
+            'mean': col.mean(),
+            'var': col.reduce(ee.Reducer.variance()),
+            'n': col.count()
+        }
 
-    s_pre, s_post = stats(pre), stats(post)
+    s_pre = get_stats(pre)
+    s_post = get_stats(post)
 
-    t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
-        (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
-    )
-    return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
+    # Welch's Formula
+    numerator = s_pre['mean'].subtract(s_post['mean']).abs()
+    # Calculate pooled variance components
+    var_term = (s_pre['var'].divide(s_pre['n'])).add(s_post['var'].divide(s_post['n']))
+    t_score = numerator.divide(var_term.sqrt())
+
+    # Create a mask from buildings
+    building_mask = ee.Image.constant(0).paint(buildings, 1)
+
+    # Mask by threshold and strictly by building footprint
+    return t_score.updateMask(building_mask).updateMask(t_score.gt(threshold))
 
 def calculate_population_impact(damage_layer, aoi):
-    """
-    Selects LandScan HD for Ukraine or Global LandScan for other regions.
-    """
-    # 1. Define Ukraine's rough geographic bounds to toggle datasets
-    # [minLon, minLat, maxLon, maxLat]
-    ukraine_bounds = ee.Geometry.Rectangle([22.1, 44.4, 40.2, 52.4])
+    pop_image = ee.ImageCollection("projects/sat-io/open-datasets/ORNL/LANDSCAN_GLOBAL") \
+                  .filterDate('2022-01-01', '2022-12-31').first().select('b1')
 
-    # 2. Determine which asset to use based on intersection with Ukraine
-    is_ukraine = ukraine_bounds.intersects(aoi).getInfo()
-
-    if is_ukraine:
-        # High-definition LandScan for Ukraine (approx. 100m)
-        pop_image = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
-        scale_val = 100
-    else:
-        # Global LandScan (approx. 1km resolution)
-        # We take the most recent year (2022) from the collection
-        pop_image = ee.ImageCollection("projects/sat-io/open-datasets/landscan-global") \
-                      .filterDate('2022-01-01', '2022-12-31') \
-                      .first() \
-                      .select('b1') # Global LandScan typically uses 'b1' for population count
-        scale_val = 1000
-
-    # 3. Mask population by damage and reduce
     impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-
     stats = impacted_pop_image.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=aoi,
-        scale=scale_val,
+        scale=1000,
         maxPixels=1e9
     )
-
-    return stats.get(pop_image.bandNames().get(0))
+    return stats.get('b1')
 
 # --- 3. UI LAYOUT ---
-st.title("🛰️ SAR T-Test")
+countries = load_iso_data()
+country_options = {c['name']: c['code'] for c in countries}
 
-# Connection Indicator
-if st.session_state.get('ee_initialized'):
-    st.sidebar.success("✅ GEE Connected")
-else:
-    st.sidebar.error("❌ GEE Disconnected")
+report_container = st.container()
 
-st.sidebar.header("1. Data Sources")
-footprint_source = st.sidebar.selectbox(
-    "Building Footprint Set",
-    ["Google Open Buildings (V3)", "MS Global Buildings"],
-    index=0 # Defaults to Google V3
-)
+with st.sidebar:
+    st.header("Analysis Parameters")
 
-st.sidebar.header("2. Analysis Dates")
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    pre_s = st.date_input("Pre-War Start", datetime.date(2021, 1, 1))
+    selected_country_name = st.selectbox("Select Country", options=list(country_options.keys()), index=0)
+    selected_iso = country_options[selected_country_name]
+
+    footprint_source = st.selectbox("Building Footprint Set", ["MS Global Buildings"])
+    #other building fp sets ("Building Footprint Set", ["Google Open Buildings (V3)", "MS Global Buildings"])
+
+    st.subheader("Dates")
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
-with col2:
-    pre_e = st.date_input("Pre-War End", datetime.date(2021, 12, 31))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-# --- 4. EXECUTION ---
-m = geemap.Map(center=[48.379, 38.016], zoom=12)
-aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05, 37.65, 47.15")
+    st.subheader("Sensitivity")
+    # T-score threshold slider
+    t_thresh = st.slider("T-Score Threshold (Confidence)", 2.0, 10.0, 3.5, 0.5,
+                         help="Higher values = Higher confidence, but identifies fewer damaged buildings.")
 
-if st.button("🚀 Run Analysis"):
-    try:
-        coords = [float(x.strip()) for x in aoi_input.split(',')]
-        roi = ee.Geometry.Rectangle(coords)
+    st.subheader("Map Layers")
+    show_footprints = st.checkbox("Show Building Outlines", value=True)
 
-        with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            st.write("🔍 Loading building footprints...")
-            buildings = get_building_fc(roi, footprint_source)
-            count = buildings.size().getInfo()
+# --- 4. MAIN UI ---
 
-            if count == 0:
-                st.warning("No structures found in this area.")
-                status.update(label="No Data Found", state="error")
-            else:
-                st.write(f"🛰️ Processing SAR change detection for {count} structures...")
-                b_mask = ee.Image.constant(0).paint(buildings, 1)
-                damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
+st.markdown("### 🗺️ Define Area of Interest")
+st.caption("Use [Klokantech Bounding Box Tool](https://boundingbox.klokantech.com/) (Format: CSV) and paste above.")
+aoi_input = st.text_input("AOI Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+    #aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-                st.write("👥 Calculating population impact...")
-                pop_val = calculate_population_impact(damage, roi).getInfo()
+if 'map_obj' not in st.session_state:
+    st.session_state.map_obj = None
+if 'report_data' not in st.session_state:
+    st.session_state.report_data = None
 
-                if pop_val is not None:
-                    st.metric("Estimated People Affected", f"{int(pop_val):,}")
 
-                st.write("🗺️ Finalizing Map...")
-                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'blue'}, 'Buildings')
-                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
-                m.centerObject(roi, 14)
 
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
-                st.success("Results ready below.")
-    except Exception as e:
-        st.error(f"Analysis Error: {e}")
+if st.button("🚀 Run Welch's T-Test Analysis"):
+    if st.session_state.get('ee_initialized'):
+        try:
+            coords = [float(x.strip()) for x in aoi_input.split(',')]
+            roi = ee.Geometry.Rectangle(coords)
 
-m.to_streamlit(height=600)
+            with st.status("Computing Welch's T-Test...") as status:
+                # 1. Fetch Buildings
+                if footprint_source == "Google Open Buildings (V3)":
+                    buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(roi)
+                else:
+                    buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{selected_iso}").filterBounds(roi)
+
+                # 2. Perform Welch's T-Test with the user-defined threshold
+                damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh)
+
+                # 3. GEOMETRIC CLIP: This clips the raster data to the vector edges
+                damage_clipped = damage_raw.clip(buildings)
+
+                # 4. Map Setup
+                m = geemap.Map(basemap='HYBRID')
+                m.centerObject(roi, 16)
+
+                if show_footprints:
+                    outline = ee.Image().paint(buildings, 0, 1.5) # Thicker outline for visibility
+                    m.addLayer(outline, {'palette': '28659c'}, 'Building Outlines')
+
+                # Heatmap: Green (low sig) to Red (high sig)
+                m.addLayer(damage_clipped, {
+                    'min': t_thresh,
+                    'max': t_thresh + 6,
+                    'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
+                }, 'Welch T-Test (Clipped)')
+
+                st.session_state.map_obj = m
+
+                # 5. Stats calculation
+                pop_val = calculate_population_impact(damage_raw, roi).getInfo() or 0
+                st.session_state.report_data = {
+                    "country": selected_country_name,
+                    "count": buildings.size().getInfo(),
+                    "pop": int(pop_val),
+                    "thresh": t_thresh
+                }
+                status.update(label="Analysis Complete!", state="complete")
+
+        except Exception as e:
+            st.error(f"Analysis Error: {e}")
+
+# --- 5. PERSISTENT DISPLAY ---
+if st.session_state.report_data:
+    with report_container:
+        d = st.session_state.report_data
+        st.info(f"Analysis Result: {d['country']} at $t > {d['thresh']}$")
+        c1, c2 = st.columns(2)
+        c1.metric("Buildings Analyzed", f"{d['count']:,}")
+        c2.metric("Est. Pop. in Damage Zone", f"{d['pop']:,}")
+df = pd.DataFrame([st.session_state.report_data])
+csv = df.to_csv(index=False).encode('utf-8')
+
+st.download_button(
+    label="📥 Download Assessment Report (CSV)",
+    data=csv,
+    file_name=f"damage_report_{selected_iso}.csv",
+    mime="text/csv",
+)
+if st.session_state.map_obj:
+    st.session_state.map_obj.to_streamlit(height=700)
