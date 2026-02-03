@@ -6,9 +6,12 @@ import json
 import datetime
 import pandas as pd
 from google.oauth2 import service_account
+import geemap.foliumap as geemap
 
 # --- 1. CONFIG & AUTH ---
-st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
+#st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
+#Set page to wide mode to give the map more room
+st.set_page_config(layout="wide")
 
 def authenticate_gee():
     if 'ee_initialized' not in st.session_state:
@@ -145,7 +148,8 @@ if st.button("🚀 Run Welch's T-Test Analysis"):
 
                 # 4. Map Setup
                 m = geemap.Map(basemap='HYBRID')
-                m.centerObject(roi, 16)
+                #m.centerObject(roi, 16)
+                m = geemap.Map(center=[40, -100], zoom=4)
 
                 if show_footprints:
                     outline = ee.Image().paint(buildings, 0, 1.5) # Thicker outline for visibility
@@ -159,6 +163,7 @@ if st.button("🚀 Run Welch's T-Test Analysis"):
                 }, 'Welch T-Test (Clipped)')
 
                 st.session_state.map_obj = m
+                m.to_streamlit(height=600, responsive=True)
 
                 # 5. Stats calculation
                 pop_val = calculate_population_impact(damage_raw, roi).getInfo() or 0
