@@ -59,6 +59,9 @@ def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, th
         .filter(ee.Filter.eq('instrumentMode', 'IW')) \
         .filter(ee.Filter.eq('orbitProperties_pass', orbit_pass)) \
         .select('VV')
+   
+    # To lock the analysis to a specific track (e.g., Track 14)
+    s1 = s1.filter(ee.Filter.eq('relativeOrbitNumber_start', 14))
 
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
