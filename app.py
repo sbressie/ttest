@@ -59,9 +59,6 @@ def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, th
         .filter(ee.Filter.eq('instrumentMode', 'IW')) \
         .filter(ee.Filter.eq('orbitProperties_pass', orbit_pass)) \
         .select('VV')
-   
-    # To lock the analysis to a specific track (e.g., Track 14)
-    s1 = s1.filter(ee.Filter.eq('relativeOrbitNumber_start', 14))
 
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
@@ -131,7 +128,32 @@ with st.sidebar:
     st.subheader("Sensitivity")
     t_thresh = st.slider("T-Score Threshold", 2.0, 10.0, 3.5, 0.5)
     show_footprints = st.checkbox("Show Building Outlines", value=True)
-    
+
+    # --- New: Availability Check ---
+    if st.button("🔍 Check Image Availability"):
+        if st.session_state.get('ee_initialized'):
+            try:
+                coords = [float(x.strip()) for x in aoi_input.split(',')]
+                tmp_roi = ee.Geometry.Rectangle(coords)
+                
+                def count_orbit(direction):
+                    return ee.ImageCollection('COPERNICUS/S1_GRD') \
+                        .filterBounds(tmp_roi) \
+                        .filter(ee.Filter.eq('orbitProperties_pass', direction)) \
+                        .filterDate(str(pre_s), str(post_e)) \
+                        .size().getInfo()
+
+                asc_count = count_orbit('ASCENDING')
+                desc_count = count_orbit('DESCENDING')
+                
+                st.sidebar.write(f"📈 **Images found (Baseline to Present):**")
+                st.sidebar.write(f"- Ascending: {asc_count}")
+                st.sidebar.write(f"- Descending: {desc_count}")
+                
+                if asc_count == 0 and desc_count == 0:
+                    st.sidebar.warning("No images found for these dates/AOI.")
+            except Exception as e:
+                st.sidebar.error(f"Check failed: {e}")
     run_button = st.button("🚀 Run Welch's T-Test Analysis")
 
 st.markdown("### 🗺️ Define Area of Interest")
