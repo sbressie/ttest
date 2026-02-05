@@ -1,11 +1,14 @@
 import streamlit as st
 import ee
 import geemap.foliumap as geemap # Use the folium-specific backend
+except ImportError:
+    import geemap
 import json
 import datetime
 import pandas as pd
 from google.oauth2 import service_account
 from streamlit_folium import st_folium
+
 
 # --- 1. CONFIG & AUTH ---
 st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
