@@ -4,8 +4,7 @@ import datetime
 import folium
 from streamlit_folium import st_folium
 
-# --- 1. SETUP & AUTH ---
-# (Keep your authenticate_gee() function here)
+# --- 1. CONFIG & AUTH ---
 st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
 
 def authenticate_gee():
