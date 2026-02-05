@@ -206,11 +206,11 @@ if st.session_state.report_data:
     
     st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
     
-    c1, c2, c3 = st.columns([1, 1, 1])
-    c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
-    c2.metric("Est. Pop. Impacted", f"{d.get('pop', 0):,}")
+    #c1, c2, c3 = st.columns([1, 1, 1])
+    #c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
+    #c2.metric("Est. Pop. Impacted", f"{d.get('pop', 0):,}")
     
     # Download logic
-    df = pd.DataFrame([d])
-    csv = df.to_csv(index=False).encode('utf-8')
-    c3.download_button("📥 Download CSV", csv, f"damage_report.csv", "text/csv")
+    #df = pd.DataFrame([d])
+    #csv = df.to_csv(index=False).encode('utf-8')
+    #c3.download_button("📥 Download CSV", csv, f"damage_report.csv", "text/csv")
