@@ -7,4 +7,3 @@ folium
 python-box==6.1.0
 streamlit-folium
 pandas
-ee
