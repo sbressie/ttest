@@ -6,6 +6,24 @@ from streamlit_folium import st_folium
 
 # --- 1. SETUP & AUTH ---
 # (Keep your authenticate_gee() function here)
+st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
+
+def authenticate_gee():
+    if 'ee_initialized' not in st.session_state:
+        try:
+            cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
+            if hasattr(cred_info, "to_dict"):
+                cred_info = cred_info.to_dict()
+
+            credentials = service_account.Credentials.from_service_account_info(
+                cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
+            )
+            ee.Initialize(credentials, project=cred_info.get('project_id'))
+            st.session_state['ee_initialized'] = True
+        except Exception as e:
+            st.sidebar.error(f"❌ Auth Error: {e}")
+
+authenticate_gee()
 
 # --- 2. THE MAP HELPER ---
 def add_ee_layer(self, ee_image_object, vis_params, name):
