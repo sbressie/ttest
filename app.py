@@ -145,9 +145,11 @@ if st.button("🚀 Run Welch's T-Test Analysis"):
                 damage_clipped = damage_raw.clip(buildings)
 
                 # 4. Map Setup
-                m = geemap.Map(basemap="OpenStreetMap")
-                m.centerObject(roi, 16)
-                m.to_streamlit(height=600)
+                m = geemap.Map()
+                m.add_basemap("OpenStreetMap")
+                m.to_streamlit(height=700, responsive=True)
+                #m.centerObject(roi, 16)
+                #m.to_streamlit(height=600)
                 
 
                 if show_footprints:
