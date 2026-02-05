@@ -185,6 +185,19 @@ if run_button:
 # --- 6. PERSISTENT DISPLAY ---
 if st.session_state.report_data:
     d = st.session_state.report_data
+    st.info(f"Analysis Result: {d['country']} | Orbit: {d['orbit']} | $t > {d['thresh']}$")
+    c1, c2, c3 = st.columns([1, 1, 1])
+    c1.metric("Buildings Analyzed", f"{d['count']:,}")
+    c2.metric("Est. Pop. Impacted", f"{d['pop']:,}")
+    
+    df = pd.DataFrame([d])
+    csv = df.to_csv(index=False).encode('utf-8')
+    c3.download_button("📥 Download CSV", csv, f"damage_{selected_iso}.csv", "text/csv")
+
+if st.session_state.map_obj:
+    st_folium(st.session_state.map_obj, width=1200, height=600, key="damage_map")
+if st.session_state.report_data:
+    d = st.session_state.report_data
     
     # Use .get() to provide fallbacks and prevent KeyErrors
     country = d.get('country', 'Unknown')
