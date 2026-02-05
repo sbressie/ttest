@@ -17,6 +17,7 @@ By performing a **Welch's T-Test** on time-series radar stacks, the app identifi
 * Google-Microsoft Open Buildings - combined by VIDA, https://beta.source.coop/repositories/vida/google-microsoft-open-buildings. Date Accessed: 20260204
 * **Population Impact:** Estimate the human cost by overlaying damage maps with **LandScan Ukraine ~100m** January 2022 population data and the World population file ~100m resolution.
 * **Interactive T-Test:** Dynamic thresholding (T > 3.5) to separate real damage from radar "speckle."
+* **Orbital direction optimization for ascending looks at terrain from the east and descending looking from the west. 
 
 ---
 
