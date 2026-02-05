@@ -1,165 +1,159 @@
 import streamlit as st
-import ee
-import geemap.foliumap as geemap # Use the folium-specific backend
+import ee  # This will now correctly load Google Earth Engine
+import geemap
+from streamlit_folium import st_folium
 import json
 import datetime
-import pandas as pd
+import os
 from google.oauth2 import service_account
-from streamlit_folium import st_folium
 
-# --- 1. CONFIG & AUTH ---
-st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
+# --- 1. CONFIGURATION & AUTH ---
+st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
 
 def authenticate_gee():
+    """Initializes GEE using Service Account with v1 API compatibility."""
     if 'ee_initialized' not in st.session_state:
         try:
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"]
-            if hasattr(cred_info, "to_dict"):
-                cred_info = cred_info.to_dict()
-
+            project_id = cred_info.get('project_id')
             credentials = service_account.Credentials.from_service_account_info(
                 cred_info, scopes=['https://www.googleapis.com/auth/earthengine']
             )
-            ee.Initialize(credentials, project=cred_info.get('project_id'))
+            # Explicitly pass project to satisfy Community Tier requirements
+            ee.Initialize(credentials, project=project_id)
             st.session_state['ee_initialized'] = True
+            st.session_state['project_id'] = project_id
+            st.sidebar.success(f"✅ GEE Connected: {project_id}")
         except Exception as e:
             st.sidebar.error(f"❌ Auth Error: {e}")
+            st.session_state['ee_initialized'] = False
 
 authenticate_gee()
 
-# --- 2. DATA HELPERS ---
+# --- 2. DATA LOADING ---
 @st.cache_data
-def load_iso_data():
+def load_iso_data(file_path='iso.json'):
     try:
-        with open('iso.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return [{"name": "Ukraine", "code": "UKR"}]
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        st.error(f"Failed to load ISO data: {e}")
+        return []
 
-def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, threshold):
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
+iso_list = load_iso_data()
+country_names = [c['name'] for c in iso_list]
+iso_map = {c['name']: c['code'] for c in iso_list}
+
+# --- 3. ANALYSIS LOGIC ---
+def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
+    """Welch's t-test logic for SAR change detection."""
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
+           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
+
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
 
-    def get_stats(col):
-        return {
-            'mean': col.mean(),
-            'var': col.reduce(ee.Reducer.variance()),
-            'n': col.count()
-        }
+    def stats(col):
+        return {'m': col.mean(), 's': col.reduce(ee.Reducer.stdDev()), 'n': col.count()}
 
-    s_pre = get_stats(pre)
-    s_post = get_stats(post)
+    s_pre, s_post = stats(pre), stats(post)
 
-    numerator = s_pre['mean'].subtract(s_post['mean']).abs()
-    var_term = (s_pre['var'].divide(s_pre['n'])).add(s_post['var'].divide(s_post['n']))
-    t_score = numerator.divide(var_term.sqrt())
-
-    building_mask = ee.Image.constant(0).paint(buildings, 1)
-    return t_score.updateMask(building_mask).updateMask(t_score.gt(threshold))
-
-def calculate_population_impact(damage_layer, aoi):
-    pop_image = ee.ImageCollection("projects/sat-io/open-datasets/ORNL/LANDSCAN_GLOBAL") \
-                  .filterDate('2022-01-01', '2022-12-31').first().select('b1')
-
-    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-    stats = impacted_pop_image.reduceRegion(
-        reducer=ee.Reducer.sum(),
-        geometry=aoi,
-        scale=1000,
-        maxPixels=1e9
+    t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
+        (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
-    return stats.get('b1')
+    return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
-# --- 3. UI LAYOUT ---
-countries = load_iso_data()
-country_options = {c['name']: c['code'] for c in countries}
+def calculate_pop(damage_layer, aoi):
+    pop = ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(aoi).sort('year', False).first()
+    stats = pop.updateMask(damage_layer.gt(0)).reduceRegion(
+        reducer=ee.Reducer.sum(), geometry=aoi, scale=100, maxPixels=1e9
+    )
+    return stats.get('population')
+
+# Create the map object using the main geemap class
+# ee_initialize=False is STILL required to avoid that _credentials error
+m = geemap.Map(ee_initialize=False)
+
+# Add your layers as before
+if show_buildings:
+    m.addLayer(buildings, {'color': '00FFFF'}, 'Buildings')
+
+# Render
+st_folium(m, width=1100, height=600)
+
+# --- 4. UI LAYOUT ---
+st.title("🛰️ VIDA Building Damage & Population Analysis")
+
+m_col1, m_col2 = st.columns(2)
+pop_placeholder = m_col1.empty()
+structure_placeholder = m_col2.empty()
 
 with st.sidebar:
-    st.header("Analysis Parameters")
-    selected_country_name = st.selectbox("Select Country", options=list(country_options.keys()), index=0)
-    selected_iso = country_options[selected_country_name]
+    st.header("Settings")
+    selected_country = st.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
+    current_iso = iso_map.get(selected_country, "UKR")
 
-    footprint_source = st.selectbox("Building Footprint Set", ["MS Global Buildings"])
+    st.markdown("---")
+    st.subheader("Map Layers")
+    show_buildings = st.checkbox("Show Building Footprints", value=True)
+    show_damage = st.checkbox("Show Damage Heatmap", value=True)
 
-    st.subheader("Dates")
-    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
-    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
-    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
-    post_e = st.date_input("Assessment End", datetime.date.today())
+    st.markdown("---")
+    st.subheader("Analysis Dates")
+    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1), key="p1")
+    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31), key="p2")
 
-    st.subheader("Sensitivity")
-    t_thresh = st.slider("T-Score Threshold", 2.0, 10.0, 3.5, 0.5)
-    show_footprints = st.checkbox("Show Building Outlines", value=True)
+    st.subheader("Assessment Period")
+    post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1), key="a1")
+    post_e = st.date_input("Assessment End", datetime.date.today(), key="a2")
 
-# --- 4. MAIN UI ---
-st.markdown("### 🗺️ Define Area of Interest")
-aoi_input = st.text_input("AOI Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# Persistence Logic
-if 'map_obj' not in st.session_state:
-    st.session_state.map_obj = None
-if 'report_data' not in st.session_state:
-    st.session_state.report_data = None
-
-if st.button("🚀 Run Welch's T-Test Analysis"):
-    if st.session_state.get('ee_initialized'):
+# --- 5. EXECUTION & FOLIUM MAP ---
+if st.button("🚀 Run Analysis"):
+    if not st.session_state.get('ee_initialized'):
+        st.error("Earth Engine not initialized. Check sidebar for errors.")
+    else:
         try:
             coords = [float(x.strip()) for x in aoi_input.split(',')]
             roi = ee.Geometry.Rectangle(coords)
 
-            with st.status("Computing Welch's T-Test...") as status:
+            with st.status("Crunching Satellite Data...") as status:
                 # 1. Fetch Buildings
-                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{selected_iso}").filterBounds(roi)
+                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{current_iso}").filterBounds(roi)
+                count = buildings.size().getInfo()
+                structure_placeholder.metric("Total Structures", f"{count:,}")
 
-                # 2. Perform Analysis
-                damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh)
-                damage_clipped = damage_raw.clip(buildings)
+                if count > 0:
+                    # 2. Damage Analysis
+                    b_mask = ee.Image.constant(1).clip(buildings).mask()
+                    damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
 
-                # 3. Create Map (geemap.foliumap)
-                m = geemap.Map()
-                m.add_basemap("HYBRID")
-                
-                if show_footprints:
-                    outline = ee.Image().paint(buildings, 0, 1.5)
-                    m.add_ee_layer(outline, {'palette': '28659c'}, 'Building Outlines')
+                    # 3. Population Impact
+                    pop_val = calculate_pop(damage, roi).getInfo()
+                    pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                m.add_ee_layer(damage_clipped, {
-                    'min': t_thresh,
-                    'max': t_thresh + 6,
-                    'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
-                }, 'Welch T-Test (Clipped)')
-                
-                m.centerObject(roi, 14)
-                st.session_state.map_obj = m
+                    # 4. Initialize Folium Map
+                    # Important: ee_initialize=False prevents the _credentials error
+                    m = geemap.Map(ee_initialize=False) # This will use the Folium backend by default in non-Jupyter environments
+                    m.centerObject(roi, 13)
+                    m.add_basemap("SATELLITE")
 
-                # 4. Stats
-                pop_val = calculate_population_impact(damage_raw, roi).getInfo() or 0
-                st.session_state.report_data = {
-                    "country": selected_country_name,
-                    "count": buildings.size().getInfo(),
-                    "pop": int(pop_val),
-                    "thresh": t_thresh
-                }
-                status.update(label="Analysis Complete!", state="complete")
+                    # 5. Add Dynamic Layers based on toggles
+                    if show_buildings:
+                        outline = ee.Image().byte().paint(buildings, 1, 2)
+                        m.addLayer(outline.updateMask(outline), {'palette': '00FFFF'}, 'Building Footprints')
 
+                    if show_damage:
+                        damage_vis = {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}
+                        m.addLayer(damage, damage_vis, 'Damage Heatmap')
+
+                    # 6. Render Map
+                    st_folium(m, width=1100, height=600, returned_objects=[])
+                    status.update(label="Analysis Complete!", state="complete")
+                else:
+                    st.warning("No buildings found in this area.")
         except Exception as e:
-            st.error(f"Analysis Error: {e}")
-
-# --- 5. PERSISTENT DISPLAY ---
-if st.session_state.report_data:
-    d = st.session_state.report_data
-    st.info(f"Analysis Result: {d['country']} at $t > {d['thresh']}$")
-    c1, c2 = st.columns(2)
-    c1.metric("Buildings Analyzed", f"{d['count']:,}")
-    c2.metric("Est. Pop. in Damage Zone", f"{d['pop']:,}")
-
-    # Display Map
-    if st.session_state.map_obj:
-        # Use st_folium for the best experience in Streamlit
-        st_folium(st.session_state.map_obj, width=1200, height=600, returned_objects=[])
-
-    # Download Button
-    df = pd.DataFrame([d])
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Report (CSV)", csv, f"damage_{selected_iso}.csv", "text/csv")
+            st.error(f"Analysis/Render Error: {e}")
