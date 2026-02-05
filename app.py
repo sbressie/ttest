@@ -185,5 +185,19 @@ if run_button:
 # --- 6. PERSISTENT DISPLAY ---
 if st.session_state.report_data:
     d = st.session_state.report_data
-    st.info(f"Analysis Result: {d['country']} | Orbit: {d['orbit']} | $t > {d['thresh']}$")
-    c1, c2, c3 = st.columns
+    
+    # Use .get() to provide fallbacks and prevent KeyErrors
+    country = d.get('country', 'Unknown')
+    orbit = d.get('orbit', 'Not Specified')
+    thresh = d.get('thresh', 3.5)
+    
+    st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
+    
+    c1, c2, c3 = st.columns([1, 1, 1])
+    c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
+    c2.metric("Est. Pop. Impacted", f"{d.get('pop', 0):,}")
+    
+    # Download logic
+    df = pd.DataFrame([d])
+    csv = df.to_csv(index=False).encode('utf-8')
+    c3.download_button("📥 Download CSV", csv, f"damage_report.csv", "text/csv")
