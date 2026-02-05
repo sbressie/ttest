@@ -1,9 +1,8 @@
 import streamlit as st
-#import ee
+import ee
 import geemap.foliumap as geemap
 import json
 import datetime
-import os
 from google.oauth2 import service_account
 
 # --- 1. SILENT AUTHENTICATION ---
@@ -15,8 +14,15 @@ def authenticate_gee():
                 st.stop()
 
             cred_info = st.secrets["EARTHENGINE_SERVICE_ACCOUNT"].to_dict()
-            scopes = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/cloud-platform']
-            credentials = service_account.Credentials.from_service_account_info(cred_info, scopes=scopes)
+            scopes = [
+                'https://www.googleapis.com/auth/earthengine',
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
+
+            credentials = service_account.Credentials.from_service_account_info(
+                cred_info, scopes=scopes
+            )
+
             ee.Initialize(credentials, project=cred_info.get('project_id'))
             st.session_state['ee_initialized'] = True
         except Exception as e:
@@ -25,36 +31,24 @@ def authenticate_gee():
 
 authenticate_gee()
 
-# --- 2. LOAD ISO DATA ---
-@st.cache_data
-def load_iso_data(file_path='iso.json'):
-    try:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return []
-    except Exception as e:
-        st.error(f"Failed to load ISO data: {e}")
-        return []
+# --- 2. HELPER FUNCTIONS ---
+def get_building_fc(aoi, source):
+    """Uses only public, high-reliability assets"""
+    if source == "Google Open Buildings (V3)":
+        # Note: Google Open Buildings currently covers Africa, Latin America,
+        # Caribbean, South Asia, and Southeast Asia (does not cover Ukraine).
+        return ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(aoi)
+    elif source == "MS Global Buildings":
 
-iso_list = load_iso_data()
-country_names = [c['name'] for c in iso_list]
-iso_map = {c['name']: c['code'] for c in iso_list}
-
-# --- 3. HELPER FUNCTIONS ---
-def get_building_fc(aoi, iso_code):
-    """Dynamic pathing for VIDA Global Buildings using ISO code."""
-    asset_path = f"projects/sat-io/open-datasets/VIDA_COMBINED/{iso_code}"
-    return ee.FeatureCollection(asset_path).filterBounds(aoi)
+        # Correct path for Ukraine in the community catalog:
+        return ee.FeatureCollection("projects/sat-io/open-datasets/MSBuildings/Ukraine").filterBounds(aoi)
+    else:
+        # Fallback to MSFP if selection varies
+        return ee.FeatureCollection("projects/google/ms_buildings").filterBounds(aoi)
 
 def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
-    """Performs Welch's t-test between baseline (pre) and assessment (post) SAR imagery."""
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi)\
-           .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')).select('VV')
-
-    # Baseline Imagery
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
     pre = s1.filterDate(str(p_start), str(p_end))
-    # Assessment Imagery
     post = s1.filterDate(str(a_start), str(a_end))
 
     def stats(col):
@@ -62,52 +56,75 @@ def perform_damage_test(aoi, mask, p_start, p_end, a_start, a_end):
 
     s_pre, s_post = stats(pre), stats(post)
 
-    # Welch's T-Test formula
     t_score = s_pre['m'].subtract(s_post['m']).abs().divide(
         (s_pre['s'].pow(2).divide(s_pre['n'])).add(s_post['s'].pow(2).divide(s_post['n'])).sqrt()
     )
-    # Return damage score clipped to building mask and thresholded
     return t_score.updateMask(mask).updateMask(t_score.gt(3.5))
 
 def calculate_population_impact(damage_layer, aoi):
-    pop_col = ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(aoi).sort('year', False)
-    pop_image = pop_col.first()
+    """
+    Selects LandScan HD for Ukraine or Global LandScan for other regions.
+    """
+    # 1. Define Ukraine's rough geographic bounds to toggle datasets
+    # [minLon, minLat, maxLon, maxLat]
+    ukraine_bounds = ee.Geometry.Rectangle([22.1, 44.4, 40.2, 52.4])
+
+    # 2. Determine which asset to use based on intersection with Ukraine
+    is_ukraine = ukraine_bounds.intersects(aoi).getInfo()
+
+    if is_ukraine:
+        # High-definition LandScan for Ukraine (approx. 100m)
+        pop_image = ee.Image('DOE/ORNL/LandScan_HD/Ukraine_202201').select('population')
+        scale_val = 100
+    else:
+        # Global LandScan (approx. 1km resolution)
+        # We take the most recent year (2022) from the collection
+        pop_image = ee.ImageCollection("projects/sat-io/open-datasets/landscan-global") \
+                      .filterDate('2022-01-01', '2022-12-31') \
+                      .first() \
+                      .select('b1') # Global LandScan typically uses 'b1' for population count
+        scale_val = 1000
+
+    # 3. Mask population by damage and reduce
     impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-    stats = impacted_pop_image.reduceRegion(reducer=ee.Reducer.sum(), geometry=aoi, scale=100, maxPixels=1e9)
-    return stats.get('population')
 
-# --- 4. UI LAYOUT ---
-st.set_page_config(page_title="VIDA Damage Assessment", layout="wide")
-st.title("🛰️ VIDA Building Damage & Population Analysis")
+    stats = impacted_pop_image.reduceRegion(
+        reducer=ee.Reducer.sum(),
+        geometry=aoi,
+        scale=scale_val,
+        maxPixels=1e9
+    )
 
-# Metric containers at the top
-metric_col1, metric_col2 = st.columns(2)
-pop_placeholder = metric_col1.empty()
-structure_placeholder = metric_col2.empty()
+    return stats.get(pop_image.bandNames().get(0))
 
-with st.sidebar:
-    st.header("1. Region & Basemap")
-    selected_country = st.selectbox("Select Country", country_names, index=country_names.index("Ukraine") if "Ukraine" in country_names else 0)
-    current_iso = iso_map[selected_country]
-    basemap_choice = st.selectbox("Choose Basemap", ["OpenStreetMap", "Google Satellite"])
+# --- 3. UI LAYOUT ---
+st.title("🛰️ SAR T-Test")
 
-    st.markdown("---")
-    st.header("2. Analysis Dates")
-    st.subheader("Baseline (Pre-Event)")
-    pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
-    pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
+# Connection Indicator
+if st.session_state.get('ee_initialized'):
+    st.sidebar.success("✅ GEE Connected")
+else:
+    st.sidebar.error("❌ GEE Disconnected")
 
-    st.subheader("Assessment (Post-Event)")
+st.sidebar.header("1. Data Sources")
+footprint_source = st.sidebar.selectbox(
+    "Building Footprint Set",
+    ["Google Open Buildings (V3)", "MS Global Buildings"],
+    index=0 # Defaults to Google V3
+)
+
+st.sidebar.header("2. Analysis Dates")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    pre_s = st.date_input("Pre-War Start", datetime.date(2021, 1, 1))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
+with col2:
+    pre_e = st.date_input("Pre-War End", datetime.date(2021, 12, 31))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-st.markdown("### 🗺️ Define Area of Interest")
-st.caption("Use [Klokantech Bounding Box](https://boundingbox.klokantech.com/) (Format: CSV) and paste below.")
-aoi_input = st.text_input("CSV Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
-
-# --- 5. MAP & EXECUTION ---
-m = geemap.Map()
-m.add_basemap("SATELLITE" if basemap_choice == "Google Satellite" else "ROADMAP")
+# --- 4. EXECUTION ---
+m = geemap.Map(center=[48.379, 38.016], zoom=12)
+aoi_input = st.text_input("AOI (MinLon, MinLat, MaxLon, MaxLat)", "37.45, 47.05, 37.65, 47.15")
 
 if st.button("🚀 Run Analysis"):
     try:
@@ -115,31 +132,31 @@ if st.button("🚀 Run Analysis"):
         roi = ee.Geometry.Rectangle(coords)
 
         with st.status("Analyzing Satellite Data...", expanded=True) as status:
-            st.write(f"🔍 Fetching {selected_country} ({current_iso}) footprints...")
-            buildings = get_building_fc(roi, current_iso)
+            st.write("🔍 Loading building footprints...")
+            buildings = get_building_fc(roi, footprint_source)
             count = buildings.size().getInfo()
-            structure_placeholder.metric("Total Structures Found", f"{count:,}")
 
-            if count > 0:
-                # Create a binary mask of buildings to clip the SAR analysis
-                b_mask = ee.Image.constant(1).clip(buildings).mask()
-
-                st.write(f"🛰️ Processing Welch's t-test for {count} structures...")
+            if count == 0:
+                st.warning("No structures found in this area.")
+                status.update(label="No Data Found", state="error")
+            else:
+                st.write(f"🛰️ Processing SAR change detection for {count} structures...")
+                b_mask = ee.Image.constant(0).paint(buildings, 1)
                 damage = perform_damage_test(roi, b_mask, pre_s, pre_e, post_s, post_e)
 
                 st.write("👥 Calculating population impact...")
                 pop_val = calculate_population_impact(damage, roi).getInfo()
-                pop_placeholder.metric("Estimated People Affected", f"{int(pop_val or 0):,}")
 
-                # Render Layers: Blue outlines for buildings, Heatmap for damage
-                m.addLayer(buildings.style(fillColor='00000000', color='0000FF', width=1), {}, 'Building Outlines')
-                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Clipped Building Damage')
+                if pop_val is not None:
+                    st.metric("Estimated People Affected", f"{int(pop_val):,}")
+
+                st.write("🗺️ Finalizing Map...")
+                m.addLayer(b_mask.updateMask(b_mask), {'palette': 'red'}, 'Buildings')
+                m.addLayer(damage, {'min': 3.5, 'max': 10, 'palette': ['#ffffb2', '#fd8d3c', '#e31a1c']}, 'Damage Map')
                 m.centerObject(roi, 14)
 
                 status.update(label="Analysis Complete!", state="complete", expanded=False)
-            else:
-                st.warning("No buildings found in this AOI.")
-                status.update(label="No Data Found", state="error")
+                st.success("Results ready below.")
     except Exception as e:
         st.error(f"Analysis Error: {e}")
 
