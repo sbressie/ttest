@@ -37,7 +37,6 @@ def load_iso_data():
         return [{"name": "Ukraine", "code": "UKR"}]
 
 def add_ee_layer(self, ee_image_object, vis_params, name):
-    """Helper to add GEE layers to Folium without geemap."""
     map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
     folium.raster_layers.TileLayer(
         tiles=map_id_dict['tile_fetcher'].url_format,
@@ -49,8 +48,18 @@ def add_ee_layer(self, ee_image_object, vis_params, name):
 
 folium.Map.add_ee_layer = add_ee_layer
 
-def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, threshold):
-    s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
+def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, threshold, orbit_pass):
+    """
+    Optimized SAR collection: filters by orbit direction (ASCENDING/DESCENDING) 
+    to ensure geometric consistency.
+    """
+    s1 = ee.ImageCollection('COPERNICUS/S1_GRD') \
+        .filterBounds(aoi) \
+        .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV')) \
+        .filter(ee.Filter.eq('instrumentMode', 'IW')) \
+        .filter(ee.Filter.eq('orbitProperties_pass', orbit_pass)) \
+        .select('VV')
+
     pre = s1.filterDate(str(p_start), str(p_end))
     post = s1.filterDate(str(a_start), str(a_end))
 
@@ -64,6 +73,7 @@ def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, th
     s_pre = get_stats(pre)
     s_post = get_stats(post)
 
+    # Welch's T-Test calculation
     numerator = s_pre['mean'].subtract(s_post['mean']).abs()
     var_term = (s_pre['var'].divide(s_pre['n'])).add(s_post['var'].divide(s_post['n']))
     t_score = numerator.divide(var_term.sqrt())
@@ -89,8 +99,6 @@ if 'map_obj' not in st.session_state:
     st.session_state.map_obj = None
 if 'report_data' not in st.session_state:
     st.session_state.report_data = None
-if 'last_iso' not in st.session_state:
-    st.session_state.last_iso = "UKR"
 
 # --- 4. UI LAYOUT ---
 countries = load_iso_data()
@@ -102,7 +110,14 @@ with st.sidebar:
     st.header("Analysis Parameters")
     selected_country_name = st.selectbox("Select Country", options=list(country_options.keys()), index=0)
     selected_iso = country_options[selected_country_name]
-    st.session_state.last_iso = selected_iso
+
+    st.subheader("Satellite Optimization")
+    orbit_direction = st.radio(
+        "Orbit Direction", 
+        ["ASCENDING", "DESCENDING"], 
+        index=0,
+        help="Ascending (South to North) and Descending (North to South) have different radar look-angles. Stick to one for accuracy."
+    )
 
     st.subheader("Dates")
     pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
@@ -126,23 +141,19 @@ if run_button:
             coords = [float(x.strip()) for x in aoi_input.split(',')]
             roi = ee.Geometry.Rectangle(coords)
 
-            with st.status("Analyzing SAR Imagery...") as status:
+            with st.status("Performing Track Optimization & Analysis...") as status:
                 # 1. Fetch Buildings
                 buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{selected_iso}").filterBounds(roi)
 
-                # 2. Perform Welch's T-Test
-                damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh)
+                # 2. Perform Analysis with optimized orbit pass
+                damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh, orbit_direction)
                 damage_clipped = damage_raw.clip(buildings)
 
                 # 3. Create Folium Map
                 m = folium.Map(location=[coords[1], coords[0]], zoom_start=14)
-                # Add Hybrid/Satellite background
                 folium.TileLayer(
                     tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-                    attr='Google',
-                    name='Google Satellite',
-                    overlay=False,
-                    control=True
+                    attr='Google', name='Google Satellite', overlay=False, control=True
                 ).add_to(m)
                 
                 if show_footprints:
@@ -150,8 +161,7 @@ if run_button:
                     m.add_ee_layer(outline, {'palette': '28659c'}, 'Building Outlines')
 
                 m.add_ee_layer(damage_clipped, {
-                    'min': t_thresh,
-                    'max': t_thresh + 6,
+                    'min': t_thresh, 'max': t_thresh + 6,
                     'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
                 }, 'Welch T-Test (Clipped)')
                 
@@ -164,7 +174,8 @@ if run_button:
                     "country": selected_country_name,
                     "count": buildings.size().getInfo(),
                     "pop": int(pop_val),
-                    "thresh": t_thresh
+                    "thresh": t_thresh,
+                    "orbit": orbit_direction
                 }
                 status.update(label="Analysis Complete!", state="complete")
 
@@ -174,15 +185,5 @@ if run_button:
 # --- 6. PERSISTENT DISPLAY ---
 if st.session_state.report_data:
     d = st.session_state.report_data
-    st.info(f"Analysis Result: {d['country']} at $t > {d['thresh']}$")
-    c1, c2, c3 = st.columns([1, 1, 1])
-    c1.metric("Buildings Analyzed", f"{d['count']:,}")
-    c2.metric("Est. Pop. Impacted", f"{d['pop']:,}")
-    
-    df = pd.DataFrame([d])
-    csv = df.to_csv(index=False).encode('utf-8')
-    c3.download_button("📥 Download CSV", csv, f"damage_{st.session_state.last_iso}.csv", "text/csv")
-
-if st.session_state.map_obj:
-    # Key="damage_map" ensures the iframe stays stable between runs
-    st_folium(st.session_state.map_obj, width=1200, height=600, key="damage_map")
+    st.info(f"Analysis Result: {d['country']} | Orbit: {d['orbit']} | $t > {d['thresh']}$")
+    c1, c2, c3 = st.columns
