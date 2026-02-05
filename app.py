@@ -204,7 +204,7 @@ if st.session_state.report_data:
     orbit = d.get('orbit', 'Not Specified')
     thresh = d.get('thresh', 3.5)
     
-    st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
+    #st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
     
     #c1, c2, c3 = st.columns([1, 1, 1])
     #c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
