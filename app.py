@@ -1,11 +1,13 @@
 import streamlit as st
 import ee
 import geemap as geemap
-import folium as foliumap
+#import folium as foliumap
 import json
 import datetime
 import pandas as pd
 from google.oauth2 import service_account
+import folium
+from streamlit_folium import st_folium
 
 
 # --- 1. CONFIG & AUTH ---
@@ -145,12 +147,14 @@ if st.button("🚀 Run Welch's T-Test Analysis"):
                 damage_clipped = damage_raw.clip(buildings)
 
                 # 4. Map Setup
-                m = geemap.Map()
-                m.add_basemap("OpenStreetMap")
-                m.to_streamlit(height=700, responsive=True)
+                ##m = geemap.Map()
+                ##m.add_basemap("OpenStreetMap")
+                ##m.to_streamlit(height=700, responsive=True)
                 #m.centerObject(roi, 16)
                 #m.to_streamlit(height=600)
-                
+                #"Testing Folium directly:"
+                m = folium.Map(location=[40, -100], zoom_start=4)
+                st_folium(m, width=700)
 
                 if show_footprints:
                     outline = ee.Image().paint(buildings, 0, 1.5) # Thicker outline for visibility
