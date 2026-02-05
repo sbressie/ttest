@@ -113,8 +113,8 @@ with st.sidebar:
 
     st.subheader("Satellite Optimization")
     orbit_direction = st.radio(
-        "Orbit Direction",
-        ["ASCENDING", "DESCENDING"],
+        "Orbit Direction", 
+        ["ASCENDING", "DESCENDING"], 
         index=0,
         help="Ascending (South to North) and Descending (North to South) have different radar look-angles. Stick to one for accuracy."
     )
@@ -128,32 +128,7 @@ with st.sidebar:
     st.subheader("Sensitivity")
     t_thresh = st.slider("T-Score Threshold", 2.0, 10.0, 3.5, 0.5)
     show_footprints = st.checkbox("Show Building Outlines", value=True)
-
-# --- New: Availability Check ---
-    if st.button("🔍 Check Image Availability"):
-        if st.session_state.get('ee_initialized'):
-            try:
-                coords = [float(x.strip()) for x in aoi_input.split(',')]
-                tmp_roi = ee.Geometry.Rectangle(coords)
-                
-                def count_orbit(direction):
-                    return ee.ImageCollection('COPERNICUS/S1_GRD') \
-                        .filterBounds(tmp_roi) \
-                        .filter(ee.Filter.eq('orbitProperties_pass', direction)) \
-                        .filterDate(str(pre_s), str(post_e)) \
-                        .size().getInfo()
-
-                asc_count = count_orbit('ASCENDING')
-                desc_count = count_orbit('DESCENDING')
-                
-                st.sidebar.write(f"📈 **Images found (Baseline to Present):**")
-                st.sidebar.write(f"- Ascending: {asc_count}")
-                st.sidebar.write(f"- Descending: {desc_count}")
-                
-                if asc_count == 0 and desc_count == 0:
-                    st.sidebar.warning("No images found for these dates/AOI.")
-            except Exception as e:
-                st.sidebar.error(f"Check failed: {e}")
+    
     run_button = st.button("🚀 Run Welch's T-Test Analysis")
 
 st.markdown("### 🗺️ Define Area of Interest")
@@ -180,7 +155,7 @@ if run_button:
                     tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
                     attr='Google', name='Google Satellite', overlay=False, control=True
                 ).add_to(m)
-
+                
                 if show_footprints:
                     outline = ee.Image().paint(buildings, 0, 1)
                     m.add_ee_layer(outline, {'palette': '28659c'}, 'Building Outlines')
@@ -189,7 +164,7 @@ if run_button:
                     'min': t_thresh, 'max': t_thresh + 6,
                     'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
                 }, 'Welch T-Test (Clipped)')
-
+                
                 folium.LayerControl().add_to(m)
                 st.session_state.map_obj = m
 
@@ -214,7 +189,7 @@ if st.session_state.report_data:
     c1, c2, c3 = st.columns([1, 1, 1])
     c1.metric("Buildings Analyzed", f"{d['count']:,}")
     c2.metric("Est. Pop. Impacted", f"{d['pop']:,}")
-
+    
     df = pd.DataFrame([d])
     csv = df.to_csv(index=False).encode('utf-8')
     c3.download_button("📥 Download CSV", csv, f"damage_{selected_iso}.csv", "text/csv")
@@ -223,19 +198,19 @@ if st.session_state.map_obj:
     st_folium(st.session_state.map_obj, width=1200, height=600, key="damage_map")
 if st.session_state.report_data:
     d = st.session_state.report_data
-
+    
     # Use .get() to provide fallbacks and prevent KeyErrors
     country = d.get('country', 'Unknown')
     orbit = d.get('orbit', 'Not Specified')
     thresh = d.get('thresh', 3.5)
-
-    st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-    c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
-    c2.metric("Est. Pop. Impacted", f"{d.get('pop', 0):,}")
-
+    
+    #st.info(f"Analysis Result: {country} | Orbit: {orbit} | $t > {thresh}$")
+    
+    #c1, c2, c3 = st.columns([1, 1, 1])
+    #c1.metric("Buildings Analyzed", f"{d.get('count', 0):,}")
+    #c2.metric("Est. Pop. Impacted", f"{d.get('pop', 0):,}")
+    
     # Download logic
-    df = pd.DataFrame([d])
-    csv = df.to_csv(index=False).encode('utf-8')
-    c3.download_button("📥 Download CSV", csv, f"damage_report.csv", "text/csv")
+    #df = pd.DataFrame([d])
+    #csv = df.to_csv(index=False).encode('utf-8')
+    #c3.download_button("📥 Download CSV", csv, f"damage_report.csv", "text/csv")
