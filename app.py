@@ -1,8 +1,16 @@
 import streamlit as st
 import ee
+import json
 import datetime
+import pandas as pd
 import folium
 from streamlit_folium import st_folium
+
+# Explicitly import the service_account module
+try:
+    from google.oauth2 import service_account
+except ImportError:
+    st.error("Package 'google-auth' not found. Please check requirements.txt")
 
 # --- 1. CONFIG & AUTH ---
 st.set_page_config(page_title="SAR Damage Assessment", layout="wide")
