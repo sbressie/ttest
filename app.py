@@ -1,10 +1,10 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap # Use the folium-specific backend
 import json
 import datetime
 import pandas as pd
 from google.oauth2 import service_account
+import folium
 from streamlit_folium import st_folium
 
 # --- 1. CONFIG & AUTH ---
@@ -27,15 +27,22 @@ def authenticate_gee():
 
 authenticate_gee()
 
-# --- 2. DATA HELPERS ---
-@st.cache_data
-def load_iso_data():
-    try:
-        with open('iso.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return [{"name": "Ukraine", "code": "UKR"}]
+# --- 2. MAP HELPER (The replacement for geemap) ---
+def add_ee_layer(self, ee_image_object, vis_params, name):
+    """Adds Earth Engine layers to a folium map."""
+    map_id_dict = ee.Image(ee_image_object).getMapId(vis_params)
+    folium.raster_layers.TileLayer(
+        tiles=map_id_dict['tile_fetcher'].url_format,
+        attr='Google Earth Engine',
+        name=name,
+        overlay=True,
+        control=True
+    ).add_to(self)
 
+# Add this method to Folium
+folium.Map.add_ee_layer = add_ee_layer
+
+# --- 3. ANALYSIS LOGIC ---
 def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, threshold):
     s1 = ee.ImageCollection('COPERNICUS/S1_GRD').filterBounds(aoi).select('VV')
     pre = s1.filterDate(str(p_start), str(p_end))
@@ -58,108 +65,38 @@ def perform_damage_test_welch(aoi, buildings, p_start, p_end, a_start, a_end, th
     building_mask = ee.Image.constant(0).paint(buildings, 1)
     return t_score.updateMask(building_mask).updateMask(t_score.gt(threshold))
 
-def calculate_population_impact(damage_layer, aoi):
-    pop_image = ee.ImageCollection("projects/sat-io/open-datasets/ORNL/LANDSCAN_GLOBAL") \
-                  .filterDate('2022-01-01', '2022-12-31').first().select('b1')
-
-    impacted_pop_image = pop_image.updateMask(damage_layer.gt(0))
-    stats = impacted_pop_image.reduceRegion(
-        reducer=ee.Reducer.sum(),
-        geometry=aoi,
-        scale=1000,
-        maxPixels=1e9
-    )
-    return stats.get('b1')
-
-# --- 3. UI LAYOUT ---
-countries = load_iso_data()
-country_options = {c['name']: c['code'] for c in countries}
-
+# --- 4. UI & MAIN ---
 with st.sidebar:
-    st.header("Analysis Parameters")
-    selected_country_name = st.selectbox("Select Country", options=list(country_options.keys()), index=0)
-    selected_iso = country_options[selected_country_name]
-
-    footprint_source = st.selectbox("Building Footprint Set", ["MS Global Buildings"])
-
-    st.subheader("Dates")
+    st.header("Parameters")
+    t_thresh = st.slider("T-Score Threshold", 2.0, 10.0, 3.5, 0.5)
     pre_s = st.date_input("Baseline Start", datetime.date(2021, 1, 1))
     pre_e = st.date_input("Baseline End", datetime.date(2021, 12, 31))
     post_s = st.date_input("Assessment Start", datetime.date(2024, 6, 1))
     post_e = st.date_input("Assessment End", datetime.date.today())
 
-    st.subheader("Sensitivity")
-    t_thresh = st.slider("T-Score Threshold", 2.0, 10.0, 3.5, 0.5)
-    show_footprints = st.checkbox("Show Building Outlines", value=True)
+aoi_input = st.text_input("AOI (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
 
-# --- 4. MAIN UI ---
-st.markdown("### 🗺️ Define Area of Interest")
-aoi_input = st.text_input("AOI Bounding Box (minLon, minLat, maxLon, maxLat)", "37.45, 47.05, 37.65, 47.15")
+if st.button("🚀 Run Analysis"):
+    try:
+        coords = [float(x.strip()) for x in aoi_input.split(',')]
+        roi = ee.Geometry.Rectangle(coords)
+        
+        # Hardcoding UKR for the Vida dataset path logic in your previous snippet
+        buildings = ee.FeatureCollection("projects/sat-io/open-datasets/VIDA_COMBINED/UKR").filterBounds(roi)
+        damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh)
 
-# Persistence Logic
-if 'map_obj' not in st.session_state:
-    st.session_state.map_obj = None
-if 'report_data' not in st.session_state:
-    st.session_state.report_data = None
+        # Initialize Pure Folium Map
+        m = folium.Map(location=[coords[1], coords[0]], zoom_start=14)
+        
+        # Add SAR Damage Layer
+        m.add_ee_layer(damage_raw, {
+            'min': t_thresh,
+            'max': t_thresh + 6,
+            'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
+        }, 'Damage Map')
 
-if st.button("🚀 Run Welch's T-Test Analysis"):
-    if st.session_state.get('ee_initialized'):
-        try:
-            coords = [float(x.strip()) for x in aoi_input.split(',')]
-            roi = ee.Geometry.Rectangle(coords)
-
-            with st.status("Computing Welch's T-Test...") as status:
-                # 1. Fetch Buildings
-                buildings = ee.FeatureCollection(f"projects/sat-io/open-datasets/VIDA_COMBINED/{selected_iso}").filterBounds(roi)
-
-                # 2. Perform Analysis
-                damage_raw = perform_damage_test_welch(roi, buildings, pre_s, pre_e, post_s, post_e, t_thresh)
-                damage_clipped = damage_raw.clip(buildings)
-
-                # 3. Create Map (geemap.foliumap)
-                m = geemap.Map()
-                m.add_basemap("HYBRID")
-                
-                if show_footprints:
-                    outline = ee.Image().paint(buildings, 0, 1.5)
-                    m.add_ee_layer(outline, {'palette': '28659c'}, 'Building Outlines')
-
-                m.add_ee_layer(damage_clipped, {
-                    'min': t_thresh,
-                    'max': t_thresh + 6,
-                    'palette': ['#ffffb2', '#fecc5c', '#fd8d3c', '#f03b20', '#bd0026']
-                }, 'Welch T-Test (Clipped)')
-                
-                m.centerObject(roi, 14)
-                st.session_state.map_obj = m
-
-                # 4. Stats
-                pop_val = calculate_population_impact(damage_raw, roi).getInfo() or 0
-                st.session_state.report_data = {
-                    "country": selected_country_name,
-                    "count": buildings.size().getInfo(),
-                    "pop": int(pop_val),
-                    "thresh": t_thresh
-                }
-                status.update(label="Analysis Complete!", state="complete")
-
-        except Exception as e:
-            st.error(f"Analysis Error: {e}")
-
-# --- 5. PERSISTENT DISPLAY ---
-if st.session_state.report_data:
-    d = st.session_state.report_data
-    st.info(f"Analysis Result: {d['country']} at $t > {d['thresh']}$")
-    c1, c2 = st.columns(2)
-    c1.metric("Buildings Analyzed", f"{d['count']:,}")
-    c2.metric("Est. Pop. in Damage Zone", f"{d['pop']:,}")
-
-    # Display Map
-    if st.session_state.map_obj:
-        # Use st_folium for the best experience in Streamlit
-        st_folium(st.session_state.map_obj, width=1200, height=600, returned_objects=[])
-
-    # Download Button
-    df = pd.DataFrame([d])
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Report (CSV)", csv, f"damage_{selected_iso}.csv", "text/csv")
+        # Display
+        st_folium(m, width=1200, height=600)
+        
+    except Exception as e:
+        st.error(f"Error: {e}")
