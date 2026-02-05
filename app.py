@@ -1,5 +1,5 @@
 import streamlit as st
-import ee
+#import ee
 import geemap as geemap
 #import folium as foliumap
 import json
